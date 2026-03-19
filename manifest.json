@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
-  "name": "FoxVox",
-  "version": "3.1",
-  "description": "Provided with OpenAI API key, rewrites any website to look like something else!",
+  "name": "FoxVox Extended",
+  "version": "4.0",
+  "description": "Rewrite any webpage with different perspectives, or fact-check it with multiple AI models side-by-side.",
   "permissions": ["storage", "tabs", "webNavigation", "scripting", "activeTab"],
   "action": {
     "default_popup": "popup.html",

@@ -1,6 +1,6 @@
 import {clear_object_stores, fetch_from_object_store, open_indexDB, push_to_object_store} from "./database.js";
 import {CoT} from "./generation.js";
-import OpenAI from "openai";
+import {runBiasAnalysis} from "./bias.js";
 
 function collect_content() {
     const TEXT_BOUNDARY_MIN = 20;
@@ -164,75 +164,17 @@ Generation (DOESN'T WORK)
 --###--
 */
 
-async function* generate(nodes, template, openai, default_openai) {
-    let key = openai
-    console.log("Community key is: ", default_openai)
-    if(key) {
-        const client = new OpenAI({apiKey: key, dangerouslyAllowBrowser: true});
-        try {
-            await client.chat.completions.create({
-                model: 'gpt-4o',
-                messages: [
-                    {
-                        "role": "system",
-                        "content": "ping"
-                    }
-                ]
-            })
-        } catch (e) {
-            console.log("Fetching data!")
-            await fetch('https://gist.githubusercontent.com/fedor-palisade-research/15cc05c51d4659d7bbec3f5e9594aaf6/raw/311a92e4a25ce1fd5a64951ad35ab09b98399f88/community_key.txt')
-                .then(response => response.text())
-                .then(data => {
-                    console.log(data)
-
-                    function decodeBase64(str) {
-                        return decodeURIComponent(atob(str).split('').map(function (c) {
-                            return '%' + ('00' + c.charCodeAt(0).toString(16)).slice(-2);
-                        }).join(''));
-                    }
-
-                    key = decodeBase64(data);
-                })
-                .catch(error => {
-                    console.error('Error fetching the string:', error)
-                    key = default_openai
-                });
-        }
-    } else {
-        console.log("Fetching data!")
-        await fetch('https://gist.githubusercontent.com/fedor-palisade-research/15cc05c51d4659d7bbec3f5e9594aaf6/raw/311a92e4a25ce1fd5a64951ad35ab09b98399f88/community_key.txt')
-            .then(response => response.text())
-            .then(data => {
-                console.log(data)
-
-                function decodeBase64(str) {
-                    return decodeURIComponent(atob(str).split('').map(function (c) {
-                        return '%' + ('00' + c.charCodeAt(0).toString(16)).slice(-2);
-                    }).join(''));
-                }
-
-                key = decodeBase64(data);
-            })
-            .catch(error => {
-                console.error('Error fetching the string:', error)
-                key = default_openai
-            });
-    }
-
+async function* generate(nodes, template, provider, apiKeys) {
     const promises = nodes.map(async node => {
-        console.log("CoT launched for node", node, "at", Date.now(), "with template", template.generation);
-        const original = node.innerHTML;
-        const generation = await CoT(key, template, original);
-        console.log("CoT finished for node", node, "at", Date.now(), "with result:", generation);
-        return {xpath: node.xpath, html: generation};
+        console.log('[FoxVox] CoT launched for node', node.xpath, 'with provider', provider);
+        const html = await CoT(provider, apiKeys, template, node.innerHTML);
+        console.log('[FoxVox] CoT finished for node', node.xpath);
+        return { xpath: node.xpath, html };
     });
 
     for (const promise of promises) {
         const completion = await promise;
-        if (completion.html) {
-            yield completion;
-        }
+        if (completion.html) yield completion;
     }
 }
 
@@ -373,71 +315,315 @@ async function process_request(request) {
     }
 
     if (request.action === "generate") {
-        chrome.runtime.sendMessage({
-            action: "generation_initialized",
-        });
+        chrome.runtime.sendMessage({ action: "generation_initialized" });
 
         new Promise(async (resolve, reject) => {
             try {
                 const original = await fetch_from_object_store(request.url, 'original');
-                chrome.storage.local.get(['template_' + request.url, 'openai'], async function (result) {
-                    if (result['template_' + request.url]) {
+                const storageKeys = [
+                    'template_' + request.url,
+                    'key_openai', 'key_anthropic', 'key_gemini', 'key_grok',
+                    'key_ollama-url', 'key_ollama-model', 'key_lmstudio-url', 'key_lmstudio-model'
+                ];
+                chrome.storage.local.get(storageKeys, async function (result) {
+                    if (!result['template_' + request.url]) {
+                        reject('No template selected.');
+                        return;
+                    }
+                    const apiKeys = {
+                        openai:        result.key_openai,
+                        anthropic:     result.key_anthropic,
+                        gemini:        result.key_gemini,
+                        grok:          result.key_grok,
+                        ollama_url:    result['key_ollama-url'],
+                        ollama_model:  result['key_ollama-model'],
+                        lmstudio_url:  result['key_lmstudio-url'],
+                        lmstudio_model: result['key_lmstudio-model']
+                    };
+                    const provider = request.rewriteProvider || 'openai';
+
+                    try {
                         let nodes = [];
-                        for await (const node of generate(original, result['template_' + request.url], result['openai'], request.key)) {
-                            nodes.push(node)
+                        for await (const node of generate(original, result['template_' + request.url], provider, apiKeys)) {
+                            nodes.push(node);
                             const xpath = node.xpath;
                             const html = node.html;
-
                             const func = function (xpath, html) {
                                 const node = document.evaluate(xpath, document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null).singleNodeValue;
-
-                                if (node) {
-                                    node.innerHTML = html;
-                                } else {
-                                    console.log(`No element matches the provided XPath: ${xpath}`);
-                                }
-                            }
-
-                            chrome.scripting.executeScript({
-                                target: {tabId: request.id},
-                                function: func,
-                                args: [xpath, html]
-                            });
+                                if (node) { node.innerHTML = html; }
+                                else { console.log(`No element matches XPath: ${xpath}`); }
+                            };
+                            chrome.scripting.executeScript({ target: { tabId: request.id }, function: func, args: [xpath, html] });
                         }
-
                         if (nodes.length) {
-                            await push_to_object_store(request.url, result['template_' + request.url].name, nodes)
+                            await push_to_object_store(request.url, result['template_' + request.url].name, nodes);
                         }
-
-                        console.log("Page rewritten!...");
+                        console.log('[FoxVox] Page rewritten.');
                         resolve();
-                    } else {
-                        console.log('Cannot find required keys in local storage.');
-                        reject('Cannot find required keys in local storage.');
+                    } catch (err) {
+                        reject(err);
                     }
                 });
             } catch (error) {
-                console.log('Error in processing:', error);
                 reject(error);
             }
         }).then(() => {
-            chrome.storage.local.get(['template_' + request.url], async function (result) {
-                chrome.runtime.sendMessage({
-                    action: "template_cached",
-                    template_name: result['template_' + request.url].name
-                });
+            chrome.storage.local.get(['template_' + request.url], function (result) {
+                chrome.runtime.sendMessage({ action: "template_cached", template_name: result['template_' + request.url].name });
             });
-
-            chrome.runtime.sendMessage({
-                action: "generation_completed",
-            });
+            chrome.runtime.sendMessage({ action: "generation_completed" });
         }).catch(error => {
-            console.log(`Error during generation: ${error}`);
+            console.error('[FoxVox] Generation error:', error);
+            chrome.runtime.sendMessage({ action: "generation_completed" });
         });
     }
 }
 
+/*
+--###--
+Bias panel injection helpers
+--###--
+*/
+
+function showErrorPanel(message) {
+    const existing = document.getElementById('foxvox-bias-panel');
+    if (existing) existing.remove();
+
+    const panel = document.createElement('div');
+    panel.id = 'foxvox-bias-panel';
+    panel.style.cssText = [
+        'position:fixed', 'right:0', 'top:0', 'width:420px', 'height:100vh',
+        'background:white', 'z-index:2147483647',
+        'box-shadow:-4px 0 20px rgba(0,0,0,0.25)',
+        'font-family:Arial,sans-serif',
+        'display:flex', 'flex-direction:column',
+        'align-items:center', 'justify-content:center',
+        'padding:24px', 'text-align:center'
+    ].join(';');
+    panel.innerHTML = [
+        '<div style="font-size:36px;">⚠</div>',
+        '<div style="color:#c00;font-size:14px;font-weight:bold;margin-top:10px;">Analysis Failed</div>',
+        '<div style="color:#555;font-size:12px;margin-top:8px;line-height:1.6;">' + message.replace(/</g, '&lt;') + '</div>',
+        '<button onclick="this.parentElement.remove()" style="margin-top:16px;background:#9e01ac;color:white;border:none;border-radius:4px;padding:7px 18px;cursor:pointer;font-size:13px;">Close</button>'
+    ].join('');
+    document.body.appendChild(panel);
+}
+
+function showLoadingPanel() {
+    const existing = document.getElementById('foxvox-bias-panel');
+    if (existing) existing.remove();
+
+    const panel = document.createElement('div');
+    panel.id = 'foxvox-bias-panel';
+    panel.style.cssText = [
+        'position:fixed', 'right:0', 'top:0', 'width:420px', 'height:100vh',
+        'background:white', 'z-index:2147483647',
+        'box-shadow:-4px 0 20px rgba(0,0,0,0.25)',
+        'font-family:Arial,sans-serif',
+        'display:flex', 'flex-direction:column',
+        'align-items:center', 'justify-content:center'
+    ].join(';');
+    panel.innerHTML = [
+        '<div style="font-size:42px;">🦊</div>',
+        '<div style="color:#9e01ac;font-size:16px;font-weight:bold;margin-top:12px;">Analyzing with multiple AIs...</div>',
+        '<div style="color:#888;font-size:12px;margin-top:6px;">This may take 15–45 seconds</div>'
+    ].join('');
+    document.body.appendChild(panel);
+}
+
+function showResultsPanel(results, analysisType) {
+    const existing = document.getElementById('foxvox-bias-panel');
+    if (existing) existing.remove();
+
+    const typeLabels = {
+        factcheck: 'Fact Check',
+        political: 'Political Analysis',
+        summary: 'Balanced Summary'
+    };
+
+    const panel = document.createElement('div');
+    panel.id = 'foxvox-bias-panel';
+    panel.style.cssText = [
+        'position:fixed', 'right:0', 'top:0', 'width:420px', 'height:100vh',
+        'background:white', 'z-index:2147483647',
+        'box-shadow:-4px 0 20px rgba(0,0,0,0.25)',
+        'font-family:Arial,sans-serif',
+        'display:flex', 'flex-direction:column', 'overflow:hidden'
+    ].join(';');
+
+    // Header
+    const header = document.createElement('div');
+    header.style.cssText = 'background:#9e01ac;color:white;padding:12px 16px;display:flex;justify-content:space-between;align-items:center;flex-shrink:0;';
+    header.innerHTML = [
+        '<div>',
+        '<div style="font-weight:bold;font-size:15px;">🦊 FoxVox Bias Analysis</div>',
+        '<div style="font-size:11px;opacity:0.85;margin-top:2px;">' + (typeLabels[analysisType] || analysisType) + '</div>',
+        '</div>'
+    ].join('');
+
+    const closeBtn = document.createElement('button');
+    closeBtn.innerText = '✕';
+    closeBtn.style.cssText = 'background:none;border:none;color:white;font-size:20px;cursor:pointer;padding:4px 6px;line-height:1;';
+    closeBtn.onclick = () => panel.remove();
+    header.appendChild(closeBtn);
+    panel.appendChild(header);
+
+    // Content area
+    const content = document.createElement('div');
+    content.style.cssText = 'flex:1;overflow-y:auto;padding:14px;';
+
+    results.forEach(result => {
+        const card = document.createElement('div');
+        card.style.cssText = 'border:2px solid ' + result.color + ';border-radius:8px;margin-bottom:16px;overflow:hidden;';
+
+        const cardHeader = document.createElement('div');
+        cardHeader.style.cssText = 'background:' + result.color + ';color:white;padding:8px 12px;font-weight:bold;font-size:13px;';
+        cardHeader.innerText = result.name;
+        card.appendChild(cardHeader);
+
+        const cardBody = document.createElement('div');
+        cardBody.style.cssText = 'padding:12px;font-size:12px;line-height:1.65;white-space:pre-wrap;color:#222;';
+        cardBody.innerText = result.error
+            ? '⚠ Error: ' + result.error
+            : (result.analysis || 'No response received.');
+        card.appendChild(cardBody);
+
+        content.appendChild(card);
+    });
+
+    panel.appendChild(content);
+    document.body.appendChild(panel);
+}
+
+/*
+--###--
+Bias check request handler
+--###--
+*/
+
+// Fetch current news headlines from Google News RSS and return a context block
+async function fetchNewsContext(query) {
+    try {
+        const q = encodeURIComponent(query.trim().slice(0, 120));
+        const res = await fetch(`https://news.google.com/rss/search?q=${q}&hl=en-US&gl=US&ceid=US:en`);
+        if (!res.ok) return null;
+        const xml = await res.text();
+
+        // Parse items via regex (DOMParser not available in MV3 service workers)
+        const items = [];
+        const itemRx = /<item>([\s\S]*?)<\/item>/g;
+        let m;
+        while ((m = itemRx.exec(xml)) !== null && items.length < 8) {
+            const block = m[1];
+            const titleMatch = block.match(/<title>(?:<!\[CDATA\[)?([\s\S]*?)(?:\]\]>)?<\/title>/);
+            const sourceMatch = block.match(/<source[^>]*>([\s\S]*?)<\/source>/);
+            const dateMatch   = block.match(/<pubDate>([\s\S]*?)<\/pubDate>/);
+            const title  = titleMatch?.[1]?.trim().replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>') || '';
+            if (!title) continue;
+            const source = sourceMatch?.[1]?.trim() || '';
+            const date   = dateMatch?.[1] ? new Date(dateMatch[1]).toLocaleDateString() : '';
+            items.push(`• ${title}${source ? ` [${source}]` : ''}${date ? ` (${date})` : ''}`);
+        }
+
+        if (!items.length) return null;
+        return `=== CURRENT NEWS CONTEXT (${new Date().toLocaleDateString()}) ===\n${items.join('\n')}\n=== END NEWS CONTEXT ===\n\n`;
+    } catch (e) {
+        console.warn('[FoxVox] News context fetch failed:', e);
+        return null;
+    }
+}
+
+async function handle_bias_check(request) {
+    // 1. Collect page text + title
+    let pageTextResult;
+    try {
+        pageTextResult = await chrome.scripting.executeScript({
+            target: { tabId: request.id },
+            func: () => ({ text: document.body.innerText, title: document.title })
+        });
+    } catch (e) {
+        console.warn('Could not get page text for bias check:', e);
+        chrome.runtime.sendMessage({ action: 'bias_check_error', message: 'Could not read page content.' });
+        return;
+    }
+    const { text: pageText, title: pageTitle } = pageTextResult[0]?.result || { text: '', title: '' };
+
+    // 1b. Optionally fetch Google News context
+    let newsContext = '';
+    if (request.webContext && pageTitle) {
+        console.log('[FoxVox] Fetching news context for:', pageTitle);
+        newsContext = (await fetchNewsContext(pageTitle)) || '';
+        if (newsContext) console.log('[FoxVox] News context fetched OK');
+    }
+
+    // 2. Show loading panel on the page
+    await chrome.scripting.executeScript({
+        target: { tabId: request.id },
+        func: showLoadingPanel
+    });
+
+    // 3. Load API keys (cloud + local model config) and run analysis
+    const storageKeys = [
+        'key_openai', 'key_anthropic', 'key_gemini', 'key_grok',
+        'key_ollama-url', 'key_ollama-model', 'key_lmstudio-url', 'key_lmstudio-model'
+    ];
+    chrome.storage.local.get(storageKeys, async (stored) => {
+        console.log('[FoxVox] Bias check storage dump:', JSON.stringify({
+            'key_ollama-url':   stored['key_ollama-url'],
+            'key_ollama-model': stored['key_ollama-model'],
+            'key_lmstudio-url': stored['key_lmstudio-url'],
+            'key_lmstudio-model': stored['key_lmstudio-model'],
+            hasOpenAI:   !!stored.key_openai,
+            hasAnthropic: !!stored.key_anthropic,
+            hasGemini:   !!stored.key_gemini,
+            hasGrok:     !!stored.key_grok
+        }));
+        console.log('[FoxVox] Selected providers:', request.selectedProviders);
+        const apiKeys = {
+            openai:          stored.key_openai,
+            anthropic:       stored.key_anthropic,
+            gemini:          stored.key_gemini,
+            grok:            stored.key_grok,
+            ollama_url:      stored['key_ollama-url'],
+            ollama_model:    stored['key_ollama-model'],
+            lmstudio_url:    stored['key_lmstudio-url'],
+            lmstudio_model:  stored['key_lmstudio-model']
+        };
+
+        try {
+            const results = await runBiasAnalysis(
+                request.selectedProviders,
+                apiKeys,
+                request.analysisType,
+                newsContext + pageText
+            );
+
+            // 4. Show results panel on the page
+            await chrome.scripting.executeScript({
+                target: { tabId: request.id },
+                func: showResultsPanel,
+                args: [results, request.analysisType]
+            });
+
+            chrome.runtime.sendMessage({ action: 'bias_check_completed' });
+        } catch (e) {
+            console.error('Bias analysis failed:', e);
+            // Show error panel on the page so the loading spinner doesn't get stuck
+            chrome.scripting.executeScript({
+                target: { tabId: request.id },
+                func: showErrorPanel,
+                args: [e.message || 'Unknown error']
+            });
+            chrome.runtime.sendMessage({ action: 'bias_check_error', message: e.message });
+        }
+    });
+}
+
 chrome.runtime.onMessage.addListener(async function (request, sender, sendResponse) {
+    if (request.action === 'run_bias_check') {
+        await handle_bias_check(request);
+        return true;
+    }
     await process_request(request, sender, sendResponse);
     return true;
 });

@@ -2,116 +2,458 @@
 <html lang="en">
 <meta charset="UTF-8">
 <head>
-    <title>FoxVox Rewriter</title>
+    <title>FoxVox Extended</title>
     <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+
         body {
-            background-color: white;
-            display: flex;
-            justify-content: center;
-            align-items: center;
+            background: white;
             font-family: Arial, sans-serif;
-            border-radius: 10px;
         }
+
         #container {
-            background-color: white;
+            width: 300px;
+            background: white;
             border-radius: 10px;
-            padding: 10px;
-            display: inline-block;
-            box-shadow: 0 0 10px rgba(0, 0, 0, 0.1);
-            width: 240px;
-            box-sizing: border-box;
+            box-shadow: 0 0 10px rgba(0,0,0,0.15);
+            overflow: hidden;
         }
+
+        /* ---- Header ---- */
         #header {
+            background: #9e01ac;
+            padding: 10px 14px;
             display: flex;
             align-items: center;
-            justify-content: flex-end;
-            margin-bottom: 10px;
+            gap: 8px;
         }
-        #header img {
-            height: 30px;
-        }
-        h1 {
-            margin: 0;
-            font-size: 24px;
-            color: #333;
-        }
-        h2 {
-            font-size: 18px;
-            color: #333;
-            margin-bottom: 10px;
-            margin-top: 10px;
+        #header img { height: 26px; }
+        #header-title {
+            color: white;
+            font-size: 16px;
             font-weight: bold;
-            text-align: left;
         }
-        .radio-container {
-            text-align: left;
-            margin-bottom: 10px;
+
+        /* ---- Tabs ---- */
+        #tabs {
+            display: flex;
+            border-bottom: 2px solid #9e01ac;
+        }
+        .tab-btn {
+            flex: 1;
+            padding: 8px 4px;
+            background: #f5f5f5;
+            border: none;
+            border-radius: 0;
+            font-size: 12px;
+            font-weight: bold;
+            color: #777;
+            cursor: pointer;
+            width: auto;
+            margin: 0;
+            transition: background 0.15s, color 0.15s;
+        }
+        .tab-btn:hover { background: #ede; color: #9e01ac; }
+        .tab-btn.active {
+            background: white;
+            color: #9e01ac;
+            border-bottom: 2px solid white;
+            margin-bottom: -2px;
+        }
+
+        /* ---- Tab content ---- */
+        .tab-content { display: none; padding: 12px; }
+        .tab-content.active { display: block; }
+
+        /* ---- Shared ---- */
+        h2 {
+            font-size: 13px;
+            color: #333;
+            margin: 8px 0 6px;
+            font-weight: bold;
+        }
+
+        button.action-btn {
+            background: #9e01ac;
+            color: white;
+            padding: 9px 0;
+            text-align: center;
+            display: block;
+            font-size: 14px;
+            cursor: pointer;
+            border: none;
+            border-radius: 4px;
+            width: 100%;
+            margin-top: 10px;
+        }
+        button.action-btn:hover { background: #870291; }
+        button.action-btn:disabled { background: #bbb; cursor: not-allowed; }
+
+        /* ---- Rewrite tab ---- */
+        .radio-container { margin-bottom: 6px; }
+        .radio-container label {
+            display: flex;
+            align-items: center;
+            margin-bottom: 6px;
+            font-size: 15px;
+            font-weight: bold;
+            color: #333;
+            cursor: pointer;
         }
         .radio-container input[type="radio"] {
             appearance: none;
             -webkit-appearance: none;
-            width: 20px;
-            height: 20px;
+            width: 18px;
+            height: 18px;
             border: 2px solid #9e01ac;
             border-radius: 50%;
-            outline: none;
-            margin-right: 10px;
-            margin-top: 0px;
+            margin-right: 8px;
             cursor: pointer;
             position: relative;
+            flex-shrink: 0;
         }
         .radio-container input[type="radio"]:checked::before {
             content: '';
-            width: 12px;
-            height: 12px;
-            background-color: #9e01ac;
+            width: 10px;
+            height: 10px;
+            background: #9e01ac;
             border-radius: 50%;
             position: absolute;
             top: 50%;
             left: 50%;
             transform: translate(-50%, -50%);
         }
-        .radio-container label {
+        #status { font-size: 11px; color: #666; margin-top: 4px; min-height: 16px; }
+
+        /* ---- Bias tab ---- */
+        .provider-list { margin-bottom: 4px; }
+        .provider-list label {
             display: flex;
             align-items: center;
-            margin-bottom: 8px;
-            font-size: 18px;
-            font-weight: bold;
+            gap: 8px;
+            margin-bottom: 6px;
+            font-size: 13px;
             color: #333;
-        }
-        button {
-            background-color: #9e01ac;
-            color: white;
-            padding: 10px 0;
-            text-align: center;
-            text-decoration: none;
-            display: inline-block;
-            font-size: 16px;
-            margin: 0px 2px;
             cursor: pointer;
-            border: none;
-            border-radius: 4px;
-            width: 100%;
         }
-        button:hover {
-            background-color: #870291;
+        .provider-list input[type="checkbox"] {
+            accent-color: #9e01ac;
+            width: 15px;
+            height: 15px;
+            cursor: pointer;
+            flex-shrink: 0;
+        }
+        .provider-dot {
+            width: 10px;
+            height: 10px;
+            border-radius: 50%;
+            flex-shrink: 0;
+        }
+        #analysis-type {
+            width: 100%;
+            padding: 6px 8px;
+            border: 1px solid #ccc;
+            border-radius: 4px;
+            font-size: 13px;
+            color: #333;
+            margin-top: 2px;
+        }
+        #bias-status { font-size: 11px; color: #666; margin-top: 6px; min-height: 16px; }
+        #model-count-warning {
+            font-size: 11px;
+            color: #c00;
+            margin-top: 4px;
+            min-height: 14px;
+        }
+
+        /* ---- Settings tab ---- */
+        .key-group { margin-bottom: 10px; }
+        .key-group label {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            font-size: 12px;
+            font-weight: bold;
+            color: #555;
+            margin-bottom: 3px;
+        }
+        .key-dot {
+            width: 9px;
+            height: 9px;
+            border-radius: 50%;
+        }
+        .key-input-row {
+            display: flex;
+            gap: 4px;
+        }
+        .key-group input[type="password"],
+        .key-group input[type="text"] {
+            flex: 1;
+            padding: 5px 8px;
+            border: 1px solid #ccc;
+            border-radius: 4px;
+            font-size: 12px;
+            font-family: monospace;
+        }
+        .key-group input:focus { outline: none; border-color: #9e01ac; }
+        .toggle-btn {
+            background: #eee;
+            border: 1px solid #ccc;
+            border-radius: 4px;
+            cursor: pointer;
+            padding: 0 7px;
+            font-size: 13px;
+            color: #555;
+            flex-shrink: 0;
+            width: auto;
+            margin: 0;
+        }
+        .toggle-btn:hover { background: #ddd; }
+        #save-status {
+            font-size: 11px;
+            color: #090;
+            margin-top: 6px;
+            min-height: 16px;
+            text-align: center;
+        }
+        .community-key-note {
+            font-size: 11px;
+            color: #888;
+            margin-top: 8px;
+            line-height: 1.4;
+        }
+        .provider-divider {
+            font-size: 11px;
+            color: #aaa;
+            text-align: center;
+            margin: 6px 0 4px;
+        }
+        .model-hint {
+            font-size: 10px;
+            color: #aaa;
+            font-weight: normal;
+        }
+        .test-btn {
+            background: #eee;
+            border: 1px solid #ccc;
+            border-radius: 4px;
+            cursor: pointer;
+            padding: 0 8px;
+            font-size: 11px;
+            color: #555;
+            flex-shrink: 0;
+            width: auto;
+            margin: 0;
+            white-space: nowrap;
+        }
+        .test-btn:hover { background: #ddd; }
+        .test-status {
+            display: block;
+            font-size: 11px;
+            margin-top: 3px;
+            min-height: 14px;
+            line-height: 1.4;
+            word-break: break-word;
+        }
+        .cors-note {
+            font-size: 11px;
+            color: #a05000;
+            background: #fff8ee;
+            border: 1px solid #f0c060;
+            border-radius: 4px;
+            padding: 6px 8px;
+            margin-top: 6px;
+            line-height: 1.5;
         }
     </style>
 </head>
 <body>
 <div id="container">
+
+    <!-- Header -->
     <div id="header">
-        <img src="icons/FoxVox.svg" alt="FoxVox Icon">
+        <img src="icons/FoxVox.svg" alt="FoxVox">
+        <span id="header-title">FoxVox Extended</span>
     </div>
-    <h2>Choose agenda:</h2>
-    <div id="radio-container" class="radio-container"></div>
-    <h2>You are using limited community key by default. If needed, insert your own key below:</h2>
-    <div id="api-key-form">
-        <label for="openAIKey"></label>
-        <input type="text" id="openAIKey" name="openAIKey">
+
+    <!-- Tab buttons -->
+    <div id="tabs">
+        <button class="tab-btn active" data-tab="rewrite">Rewrite</button>
+        <button class="tab-btn" data-tab="bias">Bias Check</button>
+        <button class="tab-btn" data-tab="settings">Settings</button>
+    </div>
+
+    <!-- ===== REWRITE TAB ===== -->
+    <div id="tab-rewrite" class="tab-content active">
+        <h2>Choose agenda:</h2>
+        <div id="radio-container" class="radio-container"></div>
+        <h2>Model:</h2>
+        <select id="rewrite-provider" style="width:100%;padding:6px 8px;border:1px solid #ccc;border-radius:4px;font-size:13px;color:#333;">
+            <option value="openai">OpenAI GPT-4o</option>
+            <option value="anthropic">Anthropic Claude</option>
+            <option value="gemini">Google Gemini 1.5</option>
+            <option value="grok">xAI Grok 2</option>
+            <option value="ollama">Ollama (Local)</option>
+            <option value="lmstudio">LM Studio (Local)</option>
+        </select>
         <p id="status"></p>
+        <button id="generate-button" class="action-btn">Rewrite the website!</button>
     </div>
-    <button id="generate-button">Rewrite the website!</button>
+
+    <!-- ===== BIAS CHECK TAB ===== -->
+    <div id="tab-bias" class="tab-content">
+        <h2>Select 2–4 models to compare:</h2>
+        <div id="model-checkboxes" class="provider-list">
+            <label>
+                <input type="checkbox" value="openai" id="check-openai">
+                <span class="provider-dot" style="background:#10a37f;"></span>
+                OpenAI GPT-4o
+            </label>
+            <label>
+                <input type="checkbox" value="anthropic" id="check-anthropic">
+                <span class="provider-dot" style="background:#d97706;"></span>
+                Anthropic Claude
+            </label>
+            <label>
+                <input type="checkbox" value="gemini" id="check-gemini">
+                <span class="provider-dot" style="background:#4285f4;"></span>
+                Google Gemini 1.5
+            </label>
+            <label>
+                <input type="checkbox" value="grok" id="check-grok">
+                <span class="provider-dot" style="background:#1a1a2e;"></span>
+                xAI Grok 2
+            </label>
+            <div class="provider-divider">— Local models —</div>
+            <label>
+                <input type="checkbox" value="ollama" id="check-ollama">
+                <span class="provider-dot" style="background:#333333;"></span>
+                <span>Ollama <span id="ollama-model-hint" class="model-hint"></span></span>
+            </label>
+            <label>
+                <input type="checkbox" value="lmstudio" id="check-lmstudio">
+                <span class="provider-dot" style="background:#6b21a8;"></span>
+                <span>LM Studio <span id="lmstudio-model-hint" class="model-hint"></span></span>
+            </label>
+        </div>
+        <div id="model-count-warning"></div>
+
+        <h2>Analysis type:</h2>
+        <select id="analysis-type">
+            <option value="factcheck">Fact Check</option>
+            <option value="political">Political Analysis</option>
+            <option value="summary">Balanced Summary</option>
+        </select>
+
+        <label style="display:flex;align-items:center;gap:8px;margin:10px 0 4px;font-size:13px;cursor:pointer;">
+            <input type="checkbox" id="web-context-toggle">
+            🌐 Include current news context
+        </label>
+
+        <p id="bias-status"></p>
+        <button id="bias-button" class="action-btn">Run Bias Analysis</button>
+    </div>
+
+    <!-- ===== SETTINGS TAB ===== -->
+    <div id="tab-settings" class="tab-content">
+        <h2>API Keys</h2>
+
+        <div class="key-group">
+            <label>
+                <span class="key-dot" style="background:#10a37f;"></span>
+                OpenAI
+            </label>
+            <div class="key-input-row">
+                <input type="password" id="key-openai" placeholder="sk-...">
+                <button class="toggle-btn" data-target="key-openai">👁</button>
+            </div>
+        </div>
+
+        <div class="key-group">
+            <label>
+                <span class="key-dot" style="background:#d97706;"></span>
+                Anthropic
+            </label>
+            <div class="key-input-row">
+                <input type="password" id="key-anthropic" placeholder="sk-ant-...">
+                <button class="toggle-btn" data-target="key-anthropic">👁</button>
+            </div>
+        </div>
+
+        <div class="key-group">
+            <label>
+                <span class="key-dot" style="background:#4285f4;"></span>
+                Google Gemini
+            </label>
+            <div class="key-input-row">
+                <input type="password" id="key-gemini" placeholder="AIza...">
+                <button class="toggle-btn" data-target="key-gemini">👁</button>
+            </div>
+        </div>
+
+        <div class="key-group">
+            <label>
+                <span class="key-dot" style="background:#1a1a2e;"></span>
+                xAI Grok
+            </label>
+            <div class="key-input-row">
+                <input type="password" id="key-grok" placeholder="xai-...">
+                <button class="toggle-btn" data-target="key-grok">👁</button>
+            </div>
+        </div>
+
+        <h2 style="margin-top:14px;">Local Models</h2>
+
+        <div class="key-group">
+            <label>
+                <span class="key-dot" style="background:#333333;"></span>
+                Ollama — URL
+            </label>
+            <div class="key-input-row">
+                <input type="text" id="key-ollama-url" placeholder="http://localhost:11434">
+                <button class="test-btn" id="test-ollama-btn">Test</button>
+            </div>
+            <span class="test-status" id="ollama-test-status"></span>
+        </div>
+        <div class="key-group">
+            <label>
+                <span class="key-dot" style="background:#333333;"></span>
+                Ollama — Model name
+            </label>
+            <input type="text" id="key-ollama-model" placeholder="llama3.2">
+        </div>
+        <p class="cors-note">
+            Uses Ollama's native <code>/api/chat</code> endpoint — no CORS config needed.
+            If Test fails, make sure Ollama is running (<code>ollama serve</code>).
+        </p>
+
+        <div class="key-group" style="margin-top:10px;">
+            <label>
+                <span class="key-dot" style="background:#6b21a8;"></span>
+                LM Studio — URL
+            </label>
+            <div class="key-input-row">
+                <input type="text" id="key-lmstudio-url" placeholder="http://localhost:1234">
+                <button class="test-btn" id="test-lmstudio-btn">Test</button>
+            </div>
+            <span class="test-status" id="lmstudio-test-status"></span>
+        </div>
+        <div class="key-group">
+            <label>
+                <span class="key-dot" style="background:#6b21a8;"></span>
+                LM Studio — Model name <span style="font-weight:normal;color:#aaa;">(optional)</span>
+            </label>
+            <input type="text" id="key-lmstudio-model" placeholder="local-model">
+        </div>
+
+        <button id="save-keys-btn" class="action-btn">Save Keys</button>
+        <p id="save-status"></p>
+        <p class="community-key-note">
+            Cloud API keys are stored locally and never shared.
+            Local models connect directly to your machine — no key needed.
+        </p>
+    </div>
+
 </div>
 <script type="module" src="popup.js"></script>
 </body>
