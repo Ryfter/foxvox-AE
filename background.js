@@ -317,6 +317,9 @@ async function process_request(request) {
     if (request.action === "generate") {
         chrome.runtime.sendMessage({ action: "generation_initialized" });
 
+        // Heartbeat: keep service worker alive during slow/large local model inference
+        const keepAlive = setInterval(() => chrome.storage.local.get('_ka', () => {}), 20000);
+
         new Promise(async (resolve, reject) => {
             try {
                 const original = await fetch_from_object_store(request.url, 'original');
@@ -325,7 +328,7 @@ async function process_request(request) {
                     'key_openai', 'key_anthropic', 'key_gemini', 'key_grok',
                     'key_ollama-url', 'key_ollama-model', 'key_lmstudio-url', 'key_lmstudio-model'
                 ];
-                chrome.storage.local.get(storageKeys, async function (result) {
+                const result = await new Promise(resolve => chrome.storage.local.get(storageKeys, resolve));
                     if (!result['template_' + request.url]) {
                         reject('No template selected.');
                         return;
@@ -363,16 +366,17 @@ async function process_request(request) {
                     } catch (err) {
                         reject(err);
                     }
-                });
             } catch (error) {
                 reject(error);
             }
         }).then(() => {
+            clearInterval(keepAlive);
             chrome.storage.local.get(['template_' + request.url], function (result) {
                 chrome.runtime.sendMessage({ action: "template_cached", template_name: result['template_' + request.url].name });
             });
             chrome.runtime.sendMessage({ action: "generation_completed" });
         }).catch(error => {
+            clearInterval(keepAlive);
             console.error('[FoxVox] Generation error:', error);
             chrome.runtime.sendMessage({ action: "generation_completed" });
         });
@@ -385,114 +389,226 @@ Bias panel injection helpers
 --###--
 */
 
-function showErrorPanel(message) {
-    const existing = document.getElementById('foxvox-bias-panel');
-    if (existing) existing.remove();
-
-    const panel = document.createElement('div');
-    panel.id = 'foxvox-bias-panel';
-    panel.style.cssText = [
-        'position:fixed', 'right:0', 'top:0', 'width:420px', 'height:100vh',
-        'background:white', 'z-index:2147483647',
-        'box-shadow:-4px 0 20px rgba(0,0,0,0.25)',
-        'font-family:Arial,sans-serif',
-        'display:flex', 'flex-direction:column',
-        'align-items:center', 'justify-content:center',
-        'padding:24px', 'text-align:center'
-    ].join(';');
-    panel.innerHTML = [
-        '<div style="font-size:36px;">⚠</div>',
-        '<div style="color:#c00;font-size:14px;font-weight:bold;margin-top:10px;">Analysis Failed</div>',
-        '<div style="color:#555;font-size:12px;margin-top:8px;line-height:1.6;">' + message.replace(/</g, '&lt;') + '</div>',
-        '<button onclick="this.parentElement.remove()" style="margin-top:16px;background:#9e01ac;color:white;border:none;border-radius:4px;padding:7px 18px;cursor:pointer;font-size:13px;">Close</button>'
-    ].join('');
-    document.body.appendChild(panel);
-}
-
 function showLoadingPanel() {
-    const existing = document.getElementById('foxvox-bias-panel');
-    if (existing) existing.remove();
-
-    const panel = document.createElement('div');
-    panel.id = 'foxvox-bias-panel';
-    panel.style.cssText = [
-        'position:fixed', 'right:0', 'top:0', 'width:420px', 'height:100vh',
-        'background:white', 'z-index:2147483647',
-        'box-shadow:-4px 0 20px rgba(0,0,0,0.25)',
-        'font-family:Arial,sans-serif',
-        'display:flex', 'flex-direction:column',
-        'align-items:center', 'justify-content:center'
-    ].join(';');
-    panel.innerHTML = [
-        '<div style="font-size:42px;">🦊</div>',
-        '<div style="color:#9e01ac;font-size:16px;font-weight:bold;margin-top:12px;">Analyzing with multiple AIs...</div>',
-        '<div style="color:#888;font-size:12px;margin-top:6px;">This may take 15–45 seconds</div>'
-    ].join('');
-    document.body.appendChild(panel);
+    document.getElementById('foxvox-bias-panel')?.remove();
+    document.getElementById('foxvox-bias-style')?.remove();
+    const s = document.createElement('style');
+    s.id = 'foxvox-bias-style';
+    s.textContent = `#foxvox-bias-panel{position:fixed;top:0;right:0;width:380px;height:100vh;background:#fff;box-shadow:-3px 0 20px rgba(0,0,0,0.12);z-index:2147483647;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;display:flex;flex-direction:column;animation:fvx-in .25s ease}@keyframes fvx-in{from{transform:translateX(380px)}to{transform:translateX(0)}}.fvx-head{padding:12px 14px;border-bottom:1px solid #e2e8f0;display:flex;align-items:center;justify-content:space-between;flex-shrink:0}.fvx-title{font-size:15px;font-weight:700;color:#0f172a}.fvx-loading{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:14px;color:#64748b;font-size:13px}.fvx-spinner{width:34px;height:34px;border:3px solid #e2e8f0;border-top-color:#0f172a;border-radius:50%;animation:fvx-spin .8s linear infinite}@keyframes fvx-spin{to{transform:rotate(360deg)}}`;
+    document.head.appendChild(s);
+    const p = document.createElement('div');
+    p.id = 'foxvox-bias-panel';
+    p.innerHTML = `<div class="fvx-head"><span class="fvx-title">Claim Checker</span></div><div class="fvx-loading"><div class="fvx-spinner"></div><span>Analyzing article…</span></div>`;
+    document.body.appendChild(p);
 }
 
-function showResultsPanel(results, analysisType) {
-    const existing = document.getElementById('foxvox-bias-panel');
-    if (existing) existing.remove();
+function showErrorPanel(message) {
+    const panel = document.getElementById('foxvox-bias-panel');
+    const esc = s => String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+    if (panel) {
+        panel.innerHTML = `<div style="padding:12px 14px;border-bottom:1px solid #e2e8f0;display:flex;align-items:center;justify-content:space-between;"><span style="font-size:15px;font-weight:700;color:#0f172a;">Claim Checker</span><button id="fvx-err-close" style="background:none;border:none;cursor:pointer;font-size:16px;color:#94a3b8;padding:2px 6px;">✕</button></div><div style="padding:16px;"><div style="background:#fee2e2;color:#dc2626;border-radius:8px;padding:14px;font-size:13px;line-height:1.6;"><strong>Analysis failed</strong><br>${esc(message)}</div></div>`;
+        document.getElementById('fvx-err-close')?.addEventListener('click', () => { panel.remove(); document.getElementById('foxvox-bias-style')?.remove(); });
+    }
+}
 
-    const typeLabels = {
-        factcheck: 'Fact Check',
-        political: 'Political Analysis',
-        summary: 'Balanced Summary'
+function showResultsPanel(results, analysisType, newsItems, pageTitle) {
+    document.getElementById('foxvox-bias-panel')?.remove();
+    document.getElementById('foxvox-bias-style')?.remove();
+
+    // ── Utilities ──────────────────────────────────────────────────────────
+    const esc = s => String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+
+    function parseJSON(text) {
+        if (!text) return null;
+        try { return JSON.parse(text); } catch(e) {}
+        const m = text.match(/```(?:json)?\s*([\s\S]*?)```/i);
+        if (m) { try { return JSON.parse(m[1].trim()); } catch(e) {} }
+        const s = text.indexOf('{'), e2 = text.lastIndexOf('}');
+        if (s !== -1 && e2 > s) { try { return JSON.parse(text.slice(s, e2+1)); } catch(e) {} }
+        return null;
+    }
+
+    // ── Verdict / credibility config ───────────────────────────────────────
+    const V = {
+        'likely true':    ['#16a34a','#dcfce7'],
+        'likely false':   ['#dc2626','#fee2e2'],
+        'mixed/disputed': ['#d97706','#fef9c3'],
+        'mixed':          ['#d97706','#fef9c3'],
+        'unverified':     ['#64748b','#f1f5f9'],
+        'leans left':     ['#2563eb','#dbeafe'],
+        'leans right':    ['#ea580c','#ffedd5'],
+        'neutral':        ['#64748b','#f1f5f9'],
     };
+    const C = {
+        'High':        ['#16a34a','#dcfce7'],
+        'Medium':      ['#d97706','#fef9c3'],
+        'Low':         ['#dc2626','#fee2e2'],
+        'Balanced':    ['#16a34a','#dcfce7'],
+        'Slight Lean': ['#d97706','#fef9c3'],
+        'Strong Lean': ['#dc2626','#fee2e2'],
+    };
+    const gv = v => V[(v||'').toLowerCase().trim()] || ['#64748b','#f1f5f9'];
+    const gc = c => C[c||''] || ['#64748b','#f1f5f9'];
+
+    // ── Render one provider's structured result ────────────────────────────
+    function renderProvider(r, uid) {
+        if (r.error) return `<div class="fvx-err">⚠ ${esc(r.error)}</div>`;
+        const p = parseJSON(r.analysis);
+        if (!p || !Array.isArray(p.claims)) {
+            return `<div class="fvx-err">Could not parse structured response.<br><pre>${esc((r.analysis||'').slice(0,400))}</pre></div>`;
+        }
+        const [cc, cb] = gc(p.credibility);
+        let html = `<div class="fvx-sec"><div class="fvx-lbl">Page Summary</div>
+            <p class="fvx-summ">${esc(p.summary)}</p>
+            <span class="fvx-badge" style="background:${cb};color:${cc};">Overall credibility: ${esc(p.credibility||'—')}</span>
+            ${p.credibilityReason ? `<p class="fvx-creason">${esc(p.credibilityReason)}</p>` : ''}
+        </div>`;
+
+        (p.claims||[]).forEach((claim, i) => {
+            const [vc] = gv(claim.verdict);
+            const bodyId = `fvxb-${uid}-${i}`;
+            const ddId   = `fvxd-${uid}-${i}`;
+            const sup = (claim.supporting||[]).map(s=>`<li>${esc(s)}</li>`).join('');
+            const opp = (claim.opposing||[]).map(s=>`<li>${esc(s)}</li>`).join('');
+            const news = (newsItems||[]).slice(0,3).filter(n=>n.url).map(n=>
+                `<a href="${esc(n.url)}" target="_blank" class="fvx-nlink">
+                    <span class="fvx-nlbl">Related</span>
+                    <span class="fvx-ntitle">${esc(n.title)}</span>
+                    ${n.date?`<span class="fvx-ndate">${esc(n.date)}</span>`:''}
+                </a>`).join('');
+
+            html += `<div class="fvx-claim">
+                <div class="fvx-ch" data-body="${bodyId}">
+                    <span class="fvx-dot" style="background:${vc};"></span>
+                    <span class="fvx-ct">${esc(claim.claim)}</span>
+                    <span class="fvx-vl" style="color:${vc};">${esc(claim.verdict||'')}</span>
+                    <span class="fvx-arr">▸</span>
+                </div>
+                <div class="fvx-cb" id="${bodyId}">
+                    ${sup?`<div class="fvx-lbl" style="margin-top:10px;">Supporting Evidence</div><ul class="fvx-ul grn">${sup}</ul>`:''}
+                    ${opp?`<div class="fvx-lbl">Opposing Evidence</div><ul class="fvx-ul red">${opp}</ul>`:''}
+                    ${claim.assessment?`<div class="fvx-lbl">Assessment</div><p class="fvx-ap">${esc(claim.assessment)}</p>`:''}
+                    ${news?`<div class="fvx-nsec">${news}</div>`:''}
+                    ${claim.deepDive?`<button class="fvx-ddbtn" data-dd="${ddId}">Deep Dive</button>
+                        <div class="fvx-dd" id="${ddId}">
+                            <div class="fvx-lbl">Detailed Analysis</div>
+                            <p class="fvx-ap">${esc(claim.deepDive)}</p>
+                        </div>`:''}
+                </div>
+            </div>`;
+        });
+        return html;
+    }
+
+    // ── CSS ────────────────────────────────────────────────────────────────
+    const css = `
+#foxvox-bias-panel{position:fixed;top:0;right:0;width:380px;height:100vh;background:#fff;box-shadow:-3px 0 20px rgba(0,0,0,0.12);z-index:2147483647;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;font-size:13px;color:#1e293b;display:flex;flex-direction:column;animation:fvx-in .25s ease}
+@keyframes fvx-in{from{transform:translateX(380px)}to{transform:translateX(0)}}
+.fvx-head{padding:12px 14px;border-bottom:1px solid #e2e8f0;display:flex;align-items:flex-start;justify-content:space-between;flex-shrink:0}
+.fvx-hl{display:flex;flex-direction:column}
+.fvx-title{font-size:15px;font-weight:700;color:#0f172a}
+.fvx-art{font-size:11px;color:#64748b;margin-top:2px;max-width:300px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.fvx-close{background:none;border:none;cursor:pointer;font-size:16px;color:#94a3b8;padding:2px 6px;border-radius:4px;line-height:1;font-family:inherit}
+.fvx-close:hover{background:#f1f5f9;color:#1e293b}
+.fvx-tabs{display:flex;gap:4px;padding:8px 12px;border-bottom:1px solid #e2e8f0;overflow-x:auto;flex-shrink:0}
+.fvx-tab{display:flex;align-items:center;gap:5px;padding:4px 10px;border-radius:20px;border:1px solid #e2e8f0;background:#f8fafc;cursor:pointer;font-size:11px;font-weight:600;color:#64748b;white-space:nowrap;font-family:inherit}
+.fvx-tab.on{background:#0f172a;color:#fff;border-color:#0f172a}
+.fvx-tdot{width:8px;height:8px;border-radius:50%;display:inline-block;flex-shrink:0}
+.fvx-body{flex:1;overflow-y:auto}
+.fvx-pane{display:none}.fvx-pane.on{display:block}
+.fvx-sec{padding:14px;border-bottom:1px solid #f1f5f9}
+.fvx-lbl{font-size:9px;font-weight:700;letter-spacing:.1em;text-transform:uppercase;color:#94a3b8;margin-bottom:6px}
+.fvx-summ{font-size:13px;line-height:1.6;color:#374151;margin:0 0 10px}
+.fvx-badge{display:inline-block;font-size:11px;font-weight:600;padding:3px 10px;border-radius:20px}
+.fvx-creason{font-size:11px;color:#64748b;margin:6px 0 0;font-style:italic}
+.fvx-claim{border-bottom:1px solid #f1f5f9}
+.fvx-ch{display:flex;align-items:flex-start;gap:9px;padding:11px 14px;cursor:pointer}
+.fvx-ch:hover{background:#f8fafc}
+.fvx-dot{width:9px;height:9px;border-radius:50%;flex-shrink:0;margin-top:3px}
+.fvx-ct{flex:1;font-size:13px;font-weight:500;line-height:1.4}
+.fvx-vl{font-size:11px;font-weight:600;white-space:nowrap;margin-top:2px;flex-shrink:0}
+.fvx-arr{font-size:10px;color:#cbd5e1;flex-shrink:0;margin-top:3px;transition:transform .15s;display:inline-block}
+.fvx-arr.open{transform:rotate(90deg)}
+.fvx-cb{display:none;padding:0 14px 14px}
+.fvx-cb.open{display:block}
+.fvx-ul{margin:0 0 8px;padding:0;list-style:none}
+.fvx-ul li{font-size:12px;color:#475569;line-height:1.5;padding:2px 0 2px 14px;position:relative}
+.fvx-ul.grn li::before{content:'●';color:#22c55e;position:absolute;left:0;font-size:7px;top:6px}
+.fvx-ul.red li::before{content:'●';color:#ef4444;position:absolute;left:0;font-size:7px;top:6px}
+.fvx-ap{font-size:12px;color:#374151;line-height:1.6;margin:4px 0 8px}
+.fvx-nsec{margin-top:8px;border-top:1px solid #f1f5f9;padding-top:4px}
+.fvx-nlink{display:flex;flex-direction:column;gap:1px;padding:5px 0;text-decoration:none;border-top:1px solid #f8fafc}
+.fvx-nlbl{font-size:9px;font-weight:700;letter-spacing:.1em;text-transform:uppercase;color:#94a3b8}
+.fvx-ntitle{font-size:12px;color:#2563eb;line-height:1.4}
+.fvx-ntitle:hover{text-decoration:underline}
+.fvx-ndate{font-size:10px;color:#94a3b8}
+.fvx-ddbtn{display:inline-block;margin-top:8px;padding:4px 14px;background:#f8fafc;border:1px solid #e2e8f0;border-radius:20px;cursor:pointer;font-size:12px;font-weight:600;color:#475569;font-family:inherit}
+.fvx-ddbtn:hover{background:#e2e8f0}
+.fvx-dd{display:none;margin-top:8px;padding:10px;background:#f8fafc;border-radius:8px}
+.fvx-dd.open{display:block}
+.fvx-err{margin:12px;padding:12px;background:#fee2e2;color:#dc2626;border-radius:8px;font-size:12px}
+.fvx-err pre{margin:6px 0 0;font-size:10px;white-space:pre-wrap;color:#7f1d1d}`;
+
+    // ── Build & mount ──────────────────────────────────────────────────────
+    const uid = Date.now();
+    const multi = results.length > 1;
+    const TLABELS = { factcheck:'Fact Check', political:'Political Analysis', summary:'Summary' };
+
+    const tabsHtml = multi
+        ? `<div class="fvx-tabs">${results.map((r,i)=>`<button class="fvx-tab${i===0?' on':''}" data-i="${i}"><span class="fvx-tdot" style="background:${r.color};"></span>${r.name.split(' ')[0]}</button>`).join('')}</div>`
+        : '';
+    const panesHtml = results.map((r,i)=>
+        `<div class="fvx-pane${i===0?' on':''}" data-i="${i}">${renderProvider(r, uid+i)}</div>`
+    ).join('');
+
+    const styleEl = document.createElement('style');
+    styleEl.id = 'foxvox-bias-style';
+    styleEl.textContent = css;
+    document.head.appendChild(styleEl);
 
     const panel = document.createElement('div');
     panel.id = 'foxvox-bias-panel';
-    panel.style.cssText = [
-        'position:fixed', 'right:0', 'top:0', 'width:420px', 'height:100vh',
-        'background:white', 'z-index:2147483647',
-        'box-shadow:-4px 0 20px rgba(0,0,0,0.25)',
-        'font-family:Arial,sans-serif',
-        'display:flex', 'flex-direction:column', 'overflow:hidden'
-    ].join(';');
+    panel.innerHTML = `
+        <div class="fvx-head">
+            <div class="fvx-hl">
+                <span class="fvx-title">Claim Checker</span>
+                <span class="fvx-art">${esc(pageTitle||TLABELS[analysisType]||'')}</span>
+            </div>
+            <button class="fvx-close">✕</button>
+        </div>
+        ${tabsHtml}
+        <div class="fvx-body">${panesHtml}</div>`;
+    document.body.appendChild(panel);
 
-    // Header
-    const header = document.createElement('div');
-    header.style.cssText = 'background:#9e01ac;color:white;padding:12px 16px;display:flex;justify-content:space-between;align-items:center;flex-shrink:0;';
-    header.innerHTML = [
-        '<div>',
-        '<div style="font-weight:bold;font-size:15px;">🦊 FoxVox Bias Analysis</div>',
-        '<div style="font-size:11px;opacity:0.85;margin-top:2px;">' + (typeLabels[analysisType] || analysisType) + '</div>',
-        '</div>'
-    ].join('');
+    // ── Events ─────────────────────────────────────────────────────────────
+    panel.querySelector('.fvx-close').addEventListener('click', () => { panel.remove(); styleEl.remove(); });
 
-    const closeBtn = document.createElement('button');
-    closeBtn.innerText = '✕';
-    closeBtn.style.cssText = 'background:none;border:none;color:white;font-size:20px;cursor:pointer;padding:4px 6px;line-height:1;';
-    closeBtn.onclick = () => panel.remove();
-    header.appendChild(closeBtn);
-    panel.appendChild(header);
+    if (multi) {
+        panel.querySelectorAll('.fvx-tab').forEach(tab => {
+            tab.addEventListener('click', () => {
+                panel.querySelectorAll('.fvx-tab').forEach(t => t.classList.remove('on'));
+                panel.querySelectorAll('.fvx-pane').forEach(p => p.classList.remove('on'));
+                tab.classList.add('on');
+                panel.querySelector(`.fvx-pane[data-i="${tab.dataset.i}"]`).classList.add('on');
+            });
+        });
+    }
 
-    // Content area
-    const content = document.createElement('div');
-    content.style.cssText = 'flex:1;overflow-y:auto;padding:14px;';
-
-    results.forEach(result => {
-        const card = document.createElement('div');
-        card.style.cssText = 'border:2px solid ' + result.color + ';border-radius:8px;margin-bottom:16px;overflow:hidden;';
-
-        const cardHeader = document.createElement('div');
-        cardHeader.style.cssText = 'background:' + result.color + ';color:white;padding:8px 12px;font-weight:bold;font-size:13px;';
-        cardHeader.innerText = result.name;
-        card.appendChild(cardHeader);
-
-        const cardBody = document.createElement('div');
-        cardBody.style.cssText = 'padding:12px;font-size:12px;line-height:1.65;white-space:pre-wrap;color:#222;';
-        cardBody.innerText = result.error
-            ? '⚠ Error: ' + result.error
-            : (result.analysis || 'No response received.');
-        card.appendChild(cardBody);
-
-        content.appendChild(card);
+    panel.querySelectorAll('.fvx-ch').forEach(h => {
+        h.addEventListener('click', () => {
+            const body = document.getElementById(h.dataset.body);
+            const arr  = h.querySelector('.fvx-arr');
+            body?.classList.toggle('open');
+            arr?.classList.toggle('open');
+        });
     });
 
-    panel.appendChild(content);
-    document.body.appendChild(panel);
+    panel.querySelectorAll('.fvx-ddbtn').forEach(btn => {
+        btn.addEventListener('click', e => {
+            e.stopPropagation();
+            document.getElementById(btn.dataset.dd)?.classList.toggle('open');
+        });
+    });
 }
 
 /*
@@ -501,35 +617,40 @@ Bias check request handler
 --###--
 */
 
-// Fetch current news headlines from Google News RSS and return a context block
+// Fetch current news headlines from Google News RSS
+// Returns { contextText: string|null, items: [{title,url,source,date}] }
 async function fetchNewsContext(query) {
     try {
         const q = encodeURIComponent(query.trim().slice(0, 120));
         const res = await fetch(`https://news.google.com/rss/search?q=${q}&hl=en-US&gl=US&ceid=US:en`);
-        if (!res.ok) return null;
+        if (!res.ok) return { contextText: null, items: [] };
         const xml = await res.text();
 
-        // Parse items via regex (DOMParser not available in MV3 service workers)
         const items = [];
         const itemRx = /<item>([\s\S]*?)<\/item>/g;
         let m;
         while ((m = itemRx.exec(xml)) !== null && items.length < 8) {
             const block = m[1];
-            const titleMatch = block.match(/<title>(?:<!\[CDATA\[)?([\s\S]*?)(?:\]\]>)?<\/title>/);
+            const titleMatch  = block.match(/<title>(?:<!\[CDATA\[)?([\s\S]*?)(?:\]\]>)?<\/title>/);
+            const linkMatch   = block.match(/<link>([\s\S]*?)<\/link>/);
             const sourceMatch = block.match(/<source[^>]*>([\s\S]*?)<\/source>/);
             const dateMatch   = block.match(/<pubDate>([\s\S]*?)<\/pubDate>/);
-            const title  = titleMatch?.[1]?.trim().replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>') || '';
+            const title = (titleMatch?.[1]||'').trim().replace(/&amp;/g,'&').replace(/&lt;/g,'<').replace(/&gt;/g,'>');
             if (!title) continue;
-            const source = sourceMatch?.[1]?.trim() || '';
+            const url    = (linkMatch?.[1]||'').trim();
+            const source = (sourceMatch?.[1]||'').trim();
             const date   = dateMatch?.[1] ? new Date(dateMatch[1]).toLocaleDateString() : '';
-            items.push(`• ${title}${source ? ` [${source}]` : ''}${date ? ` (${date})` : ''}`);
+            items.push({ title, url, source, date });
         }
 
-        if (!items.length) return null;
-        return `=== CURRENT NEWS CONTEXT (${new Date().toLocaleDateString()}) ===\n${items.join('\n')}\n=== END NEWS CONTEXT ===\n\n`;
+        if (!items.length) return { contextText: null, items: [] };
+        const contextText = `=== CURRENT NEWS CONTEXT (${new Date().toLocaleDateString()}) ===\n` +
+            items.map(i => `• ${i.title}${i.source ? ` [${i.source}]` : ''}${i.date ? ` (${i.date})` : ''}`).join('\n') +
+            `\n=== END NEWS CONTEXT ===\n\n`;
+        return { contextText, items };
     } catch (e) {
         console.warn('[FoxVox] News context fetch failed:', e);
-        return null;
+        return { contextText: null, items: [] };
     }
 }
 
@@ -549,11 +670,14 @@ async function handle_bias_check(request) {
     const { text: pageText, title: pageTitle } = pageTextResult[0]?.result || { text: '', title: '' };
 
     // 1b. Optionally fetch Google News context
-    let newsContext = '';
+    let newsContext = null;
+    let newsItems = [];
     if (request.webContext && pageTitle) {
         console.log('[FoxVox] Fetching news context for:', pageTitle);
-        newsContext = (await fetchNewsContext(pageTitle)) || '';
-        if (newsContext) console.log('[FoxVox] News context fetched OK');
+        const fetched = await fetchNewsContext(pageTitle);
+        newsContext = fetched.contextText;
+        newsItems = fetched.items;
+        if (newsContext) console.log('[FoxVox] News context OK:', newsItems.length, 'items');
     }
 
     // 2. Show loading panel on the page
@@ -562,61 +686,58 @@ async function handle_bias_check(request) {
         func: showLoadingPanel
     });
 
-    // 3. Load API keys (cloud + local model config) and run analysis
+    // 3. Load API keys — promisified so the async chain stays unbroken and the
+    //    service worker knows work is still in progress (callback pattern breaks this)
     const storageKeys = [
         'key_openai', 'key_anthropic', 'key_gemini', 'key_grok',
         'key_ollama-url', 'key_ollama-model', 'key_lmstudio-url', 'key_lmstudio-model'
     ];
-    chrome.storage.local.get(storageKeys, async (stored) => {
-        console.log('[FoxVox] Bias check storage dump:', JSON.stringify({
-            'key_ollama-url':   stored['key_ollama-url'],
-            'key_ollama-model': stored['key_ollama-model'],
-            'key_lmstudio-url': stored['key_lmstudio-url'],
-            'key_lmstudio-model': stored['key_lmstudio-model'],
-            hasOpenAI:   !!stored.key_openai,
-            hasAnthropic: !!stored.key_anthropic,
-            hasGemini:   !!stored.key_gemini,
-            hasGrok:     !!stored.key_grok
-        }));
-        console.log('[FoxVox] Selected providers:', request.selectedProviders);
-        const apiKeys = {
-            openai:          stored.key_openai,
-            anthropic:       stored.key_anthropic,
-            gemini:          stored.key_gemini,
-            grok:            stored.key_grok,
-            ollama_url:      stored['key_ollama-url'],
-            ollama_model:    stored['key_ollama-model'],
-            lmstudio_url:    stored['key_lmstudio-url'],
-            lmstudio_model:  stored['key_lmstudio-model']
-        };
+    const stored = await new Promise(resolve => chrome.storage.local.get(storageKeys, resolve));
 
-        try {
-            const results = await runBiasAnalysis(
-                request.selectedProviders,
-                apiKeys,
-                request.analysisType,
-                newsContext + pageText
-            );
+    const apiKeys = {
+        openai:         stored.key_openai,
+        anthropic:      stored.key_anthropic,
+        gemini:         stored.key_gemini,
+        grok:           stored.key_grok,
+        ollama_url:     stored['key_ollama-url'],
+        ollama_model:   stored['key_ollama-model'],
+        lmstudio_url:   stored['key_lmstudio-url'],
+        lmstudio_model: stored['key_lmstudio-model']
+    };
+    console.log('[FoxVox] Providers:', request.selectedProviders,
+        '| lmstudio:', apiKeys.lmstudio_url, apiKeys.lmstudio_model);
 
-            // 4. Show results panel on the page
-            await chrome.scripting.executeScript({
-                target: { tabId: request.id },
-                func: showResultsPanel,
-                args: [results, request.analysisType]
-            });
+    // Heartbeat: keeps service worker alive during slow local model inference
+    const keepAlive = setInterval(() => chrome.storage.local.get('_ka', () => {}), 20000);
 
-            chrome.runtime.sendMessage({ action: 'bias_check_completed' });
-        } catch (e) {
-            console.error('Bias analysis failed:', e);
-            // Show error panel on the page so the loading spinner doesn't get stuck
-            chrome.scripting.executeScript({
-                target: { tabId: request.id },
-                func: showErrorPanel,
-                args: [e.message || 'Unknown error']
-            });
-            chrome.runtime.sendMessage({ action: 'bias_check_error', message: e.message });
-        }
-    });
+    try {
+        const results = await runBiasAnalysis(
+            request.selectedProviders,
+            apiKeys,
+            request.analysisType,
+            pageText,
+            newsContext || null
+        );
+        console.log('[FoxVox] Analysis complete, rendering panel');
+
+        await chrome.scripting.executeScript({
+            target: { tabId: request.id },
+            func: showResultsPanel,
+            args: [results, request.analysisType, newsItems || [], pageTitle || '']
+        });
+
+        chrome.runtime.sendMessage({ action: 'bias_check_completed' });
+    } catch (e) {
+        console.error('[FoxVox] Bias analysis failed:', e);
+        chrome.scripting.executeScript({
+            target: { tabId: request.id },
+            func: showErrorPanel,
+            args: [e.message || 'Unknown error']
+        });
+        chrome.runtime.sendMessage({ action: 'bias_check_error', message: e.message });
+    } finally {
+        clearInterval(keepAlive);
+    }
 }
 
 chrome.runtime.onMessage.addListener(async function (request, sender, sendResponse) {

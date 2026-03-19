@@ -54,14 +54,35 @@ async function openAITextCompletion(apiKey, baseUrl, model, messages) {
             'Content-Type': 'application/json',
             ...(apiKey ? { 'Authorization': `Bearer ${apiKey}` } : {})
         },
-        body: JSON.stringify({ model: model || 'local-model', messages, max_tokens: 4096, stream: false })
+        body: JSON.stringify({ model: model || 'local-model', messages, stream: true })
     });
     if (!response.ok) {
         const err = await response.json().catch(() => ({}));
         throw new Error(err.error?.message || `HTTP ${response.status}`);
     }
-    const data = await response.json();
-    return data.choices[0].message.content;
+    // Collect SSE stream — prevents 30-second timeout on large/slow local models
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let content = '';
+    let buffer = '';
+    while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split('\n');
+        buffer = lines.pop();
+        for (const line of lines) {
+            if (!line.startsWith('data: ')) continue;
+            const data = line.slice(6).trim();
+            if (data === '[DONE]') continue;
+            try {
+                const chunk = JSON.parse(data);
+                const delta = chunk.choices?.[0]?.delta?.content;
+                if (delta) content += delta;
+            } catch (e) { /* skip malformed lines */ }
+        }
+    }
+    return content;
 }
 
 async function rewriteWithOpenAIText(apiKey, baseUrl, model, template, original) {
@@ -143,14 +164,32 @@ async function ollamaCompletion(baseUrl, model, messages) {
     const response = await fetch(`${baseUrl.replace(/\/$/, '')}/api/chat`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ model, messages, stream: false })
+        body: JSON.stringify({ model, messages, stream: true })
     });
     if (!response.ok) {
         const err = await response.json().catch(() => ({}));
         throw new Error(err.error || `HTTP ${response.status} — is Ollama running?`);
     }
-    const data = await response.json();
-    return data.message.content;
+    // Collect newline-delimited JSON stream
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let content = '';
+    let buffer = '';
+    while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split('\n');
+        buffer = lines.pop();
+        for (const line of lines) {
+            if (!line.trim()) continue;
+            try {
+                const chunk = JSON.parse(line);
+                if (chunk.message?.content) content += chunk.message.content;
+            } catch (e) { /* skip malformed lines */ }
+        }
+    }
+    return content;
 }
 
 async function rewriteOllama(baseUrl, model, template, original) {
