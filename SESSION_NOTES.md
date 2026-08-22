@@ -1,141 +1,221 @@
-# FoxVox Extended — Session Notes
+# FoxVox Extended — Complete Project Reference
 
 ## Project Overview
-- **Location**: `D:\Dev\ChromePlugin-FoxVoxExtended`
+- **Location**: `~/dev/ChromePlugin-FoxVoxExtended`
 - **Type**: Chrome Extension, Manifest V3
-- **Build**: `npm run build` → outputs `dist/background.bundle.js`
+- **Build**: `npm run build` → webpack bundles `background.js` → `dist/background.bundle.js`
 - **Fork of**: https://github.com/Ryfter/foxvox-AE
+- **Upstream**: https://github.com/PalisadeResearch/foxvox
 
 ## Architecture
-| File | Role |
-|------|------|
-| `popup.html / popup.js` | Three-tab popup UI: Rewrite \| Bias Check \| Settings |
-| `background.js` | Service worker; handles messages from popup |
-| `generation.js` | Multi-provider page rewriter (CoT) |
-| `bias.js` | Multi-LLM bias/fact-check analysis |
-| `database.js` | IndexedDB cache for rewritten content |
-| `config.json` | Rewrite templates (Fox, Vox, Humor, Conspiracy, Malicious) |
 
-## Bias Check Feature
-- User selects 2–4 providers (cloud or local), picks analysis type (Fact Check / Political / Summary)
-- Popup sends `run_bias_check` message to background service worker
-- Background calls `runBiasAnalysis()` from `bias.js`
-- Results are injected as a **420px slide-in panel** on the right side of the active page
+### File Map
+| File | Role | Loaded How |
+|------|------|-----------|
+| `manifest.json` | Extension config, MV3 | Chrome reads directly |
+| `popup.html` | Three-tab popup UI | `default_popup` in manifest |
+| `popup.js` | Popup controller (ES module, `<script type="module">`) | Loaded by popup.html |
+| `background.js` | Service worker — message handler hub | Bundled → `dist/background.bundle.js` |
+| `generation.js` | Multi-provider page rewriter | Imported by background.js |
+| `bias.js` | Multi-provider bias/fact-check analysis | Imported by background.js |
+| `database.js` | IndexedDB cache for rewritten content | Imported by background.js |
+| `config.json` | Rewrite templates + community OpenAI key | Fetched at runtime by popup.js |
+| `webpack.config.js` | Webpack config — 3 entry points | Build tool |
 
-### Providers in `bias.js`
-| Provider | Model | Notes |
-|----------|-------|-------|
-| OpenAI | gpt-4o | Requires `key_openai` |
-| Anthropic | claude-opus-4-6 | Requires `key_anthropic` |
-| Gemini | gemini-1.5-flash | Requires `key_gemini` |
-| Grok | grok-2-latest | Requires `key_grok` |
-| Ollama | configurable | Local, port 11434, `/api/chat` with `format: 'json'` + streaming |
-| LM Studio | configurable | Local, port 1234, OpenAI-compatible `/v1/chat/completions` |
+### Data Flow: Bias Check
+```
+popup.js                    background.js (service worker)          bias.js
+─────────                   ──────────────────────────────          ───────
+User clicks
+"Run Bias Analysis"
+        │
+        ├─► chrome.runtime.sendMessage({
+        │     action: 'run_bias_check',
+        │     id: tab.id,
+        │     selectedProviders: ['ollama'],
+        │     analysisType: 'factcheck',
+        │     webContext: false
+        │   })
+        │
+        │   handle_bias_check(request)
+        │     │
+        │     ├─► chrome.scripting.executeScript(
+        │     │     collect page text + title
+        │     │   )
+        │     │
+        │     ├─► (optional) fetchNewsContext(pageTitle)
+        │     │
+        │     ├─► chrome.scripting.executeScript(
+        │     │     showLoadingPanel()  ← injects 380px panel
+        │     │   )
+        │     │
+        │     ├─► chrome.storage.local.get(keys)
+        │     │     → builds apiKeys object
+        │     │
+        │     ├─► runBiasAnalysis(providers, apiKeys, ...)  ──────►│
+        │     │                                              │     │
+        │     │                                              │     ├─► queryOllama()
+        │     │                                              │     │     POST /api/chat
+        │     │                                              │     │     stream: true
+        │     │                                              │     │     format: 'json'
+        │     │                                              │     │     Collects NDJSON
+        │     │                                              │     │     Returns string
+        │     │                                              │     │
+        │     │                                              ◄─────┤
+        │     │     results = [{providerId, name, color,
+        │     │                  analysis: "JSON string"}]
+        │     │
+        │     ├─► chrome.scripting.executeScript(
+        │     │     showResultsPanel(results, ...)
+        │     │   )
+        │     │   Inside showResultsPanel:
+        │     │     parseJSON(r.analysis) → {summary, credibility,
+        │     │                              credibilityReason, claims[]}
+        │     │     renderProvider() builds HTML
+        │     │
+        │     └─► chrome.runtime.sendMessage({
+        │           action: 'bias_check_completed'
+        │         })
+        │
+        ◄─── popup receives 'bias_check_completed'
+             biasStatus = "Done! See panel on the page."
+```
+
+### Data Flow: Page Rewrite
+```
+popup.js sends { action: 'generate', rewriteProvider, id, url }
+  → background.js: process_request() → generate() async generator
+    → CoT(provider, apiKeys, template, original) from generation.js
+    → Each node's innerHTML rewritten and injected via chrome.scripting.executeScript
+```
+
+## Provider Configurations
+
+### Bias Check Providers (bias.js)
+| Provider | Function | Endpoint | JSON Enforcement |
+|----------|----------|----------|-----------------|
+| OpenAI | `queryOpenAI()` | `https://api.openai.com/v1/chat/completions` | `response_format: { type: 'json_object' }` |
+| Anthropic | `queryAnthropic()` | `https://api.anthropic.com/v1/messages` | Assistant prefill `{` |
+| Gemini | `queryGemini()` | `https://generativelanguage.googleapis.com/v1beta/...` | `responseMimeType: 'application/json'` |
+| Grok | `queryGrok()` | `https://api.x.ai/v1/chat/completions` | `response_format: { type: 'json_object' }` |
+| Ollama | `queryOllama()` | `{base}/api/chat` | `format: 'json'`, NDJSON stream |
+| LM Studio | `queryLMStudio()` | `{base}/v1/chat/completions` | SSE stream, no json_object mode |
+
+### Rewrite Providers (generation.js)
+| Provider | Function | Method |
+|----------|----------|--------|
+| OpenAI | `rewriteWithToolUse()` | Function calling (tool_choice: required) |
+| Anthropic | `rewriteAnthropic()` | Plain text + extractHTML |
+| Gemini | `rewriteGemini()` | Plain text + extractHTML |
+| Grok | `rewriteWithToolUse()` | Same as OpenAI (x.ai endpoint) |
+| Ollama | `rewriteOllama()` | NDJSON stream + extractHTML |
+| LM Studio | `rewriteWithOpenAIText()` | SSE stream + extractHTML |
 
 ## Storage Keys (chrome.storage.local)
-| Key | Value |
-|-----|-------|
+| Key | Purpose |
+|-----|---------|
+| `openai` | Legacy OpenAI key (Rewrite module) |
 | `key_openai` | OpenAI API key |
 | `key_anthropic` | Anthropic API key |
 | `key_gemini` | Gemini API key |
 | `key_grok` | Grok API key |
 | `key_ollama-url` | Ollama base URL (default: `http://localhost:11434`) |
-| `key_ollama-model` | Ollama model name (e.g. `phi4:14b-q8_0`) |
+| `key_ollama-model` | Ollama model name |
 | `key_lmstudio-url` | LM Studio base URL (default: `http://localhost:1234`) |
 | `key_lmstudio-model` | LM Studio model name |
-| `openai` | Legacy key used by Rewrite module |
+| `template_{hostname+pathname}` | Selected rewrite template per page |
 
-## Current Goal
-Run a Bias Check on the Fox News article about **Iran's new Supreme Leader Mojtaba Khamenei** using **Ollama with phi4:14b-q8_0** (free/local only, no paid API keys).
-
-## Available Ollama Models (on this machine)
-- `phi4:14b-q8_0` ← **selected** (Q8_0 quantization, supported)
-- `gemma3:27b-it-q4_K_M`
-- `qwen3:30b`
-- `phi4-reasoning:14b-q8_0`
-
-> **Note**: `gpt-oss:20b` was previously stored as the model but uses MXFP4 quantization which Ollama does not support → HTTP 400. **Already fixed** — changed to `phi4:14b-q8_0` and saved.
-
-## Settings Already Configured
-- Ollama model set to `phi4:14b-q8_0` (confirmed by label "Ollama (phi4:14b-q8_0)" showing in Bias Check tab)
-- No cloud API keys are configured or needed for this test
-
-## Known Issues / Gotchas
-
-### 1. Settings only save on button click
-The popup saves API keys/settings **only** when the "Save Keys" button is clicked. Typing in a field and switching tabs does NOT save. Always click Save after changing settings.
-
-### 2. Windows MCP Type tool bug
-`mcp__Windows-MCP__Type` throws `name '_INPUTUnion' is not defined` when using `loc` or `label`.
-**Workaround**: Use PowerShell to set clipboard → click into field → Ctrl+A → Ctrl+V.
-```powershell
-Set-Clipboard -Value "phi4:14b-q8_0"
-```
-
-### 3. Inference is slow
-phi4:14b-q8_0 at Q8_0 quantization: **3–10 minutes per inference** on GPU, especially with LM Studio also running. Don't assume it failed — it's just slow.
-
-### 4. Chrome service worker lifetime
-Background service workers can be killed and restarted by Chrome. If the extension seems unresponsive, reload it from `chrome://extensions`.
-
-### 5. Claude in Chrome tool can't reach Fox News window
-The Claude in Chrome MCP extension is locked to its own tab group. Use **Windows MCP tools** (Snapshot, Click, Shortcut) for all Chrome UI interaction.
-
-### 6. Results panel is transient
-The 420px slide-in panel appears on the right of the Fox News page after analysis completes. It may auto-close or be dismissed. Take a screenshot promptly when it appears.
-
-## Step-by-Step Plan to Run Bias Check
-
-1. **Open FoxVox popup** — click the FoxVox Extended icon in Chrome toolbar (approximately x=715, y=63 in toolbar area)
-2. **Navigate to Bias Check tab** — click "Bias Check" tab inside popup (~x=581, y=142)
-3. **Check Ollama checkbox** — click the Ollama (phi4:14b-q8_0) checkbox (~x=450, y=307)
-   - Verify no other provider checkboxes are checked (especially OpenAI — no key configured)
-4. **Select analysis type** — "Fact Check" should be default; verify or select
-5. **Click Run Bias Analysis** — button at bottom of popup (~x=581, y=494)
-6. **Watch for activity** in the Ollama terminal window to confirm request was received
-7. **Wait 3–10 minutes** for inference to complete
-8. **Take snapshot** of Fox News page to check for the slide-in results panel
-9. **Screenshot** the results panel showing summary, credibility badge, and expandable claim cards
-
-## Popup Layout Reference (approximate coords)
-- Toolbar FoxVox button: `(715, 63)`
-- Rewrite tab: `(481, 143)`
-- Bias Check tab: `(581, 142)`
-- Settings tab: `(681, 142)`
-- Ollama checkbox (Bias Check tab): `(450, 307)`
-- Run Bias Analysis button: `(581, 494)`
-- Settings → Save Keys button: roughly center-bottom of settings panel
-
-## JSON Schema Expected from Ollama (`bias.js`)
+## Expected JSON Output (from all bias providers)
 ```json
 {
-  "summary": "2-3 sentences on what the article claims",
+  "summary": "2-3 sentences",
   "credibility": "High|Medium|Low",
   "credibilityReason": "one sentence",
   "claims": [
     {
-      "claim": "4-8 word specific assertion",
+      "claim": "4-8 word assertion",
       "verdict": "likely true|likely false|mixed/disputed|unverified",
       "supporting": ["evidence..."],
       "opposing": ["counter-evidence..."],
       "assessment": "1-2 sentences",
-      "deepDive": "3-4 sentences of deeper context"
+      "deepDive": "3-4 sentences"
     }
   ]
 }
 ```
-Ollama is called with `format: 'json'` to enforce JSON output.
 
-## parseJSON Fallback Chain (background.js)
-When Ollama returns its response, `background.js` has a `parseJSON()` function with 3 fallback strategies:
-1. Direct `JSON.parse()`
-2. Extract JSON from markdown fences (` ```json ... ``` `)
-3. Find first `{` and last `}` and parse the substring
+## parseJSON Fallback Chain (inside showResultsPanel, runs in page context)
+1. `JSON.parse(text)` directly
+2. Extract from markdown fences (` ```json ... ``` `)
+3. Substring from first `{` to last `}`
+4. Returns `null` → error card shown
 
-If all fail → error card is shown with "Could not parse response".
-If parsed but `!Array.isArray(p.claims)` → error card shown (missing `claims` array).
+## Build Process
+```bash
+npm run build    # webpack --mode production
+# Entry points:
+#   background.js → dist/background.bundle.js  (used by manifest)
+#   generation.js → dist/generate.bundle.js    (not used directly)
+#   database.js   → dist/database.bundle.js    (not used directly)
+```
+Only `dist/background.bundle.js` matters — it's the service worker.
+`popup.js` is loaded directly as an ES module (NOT bundled).
 
-## Files NOT to Confuse
-- `bias.js` — the analysis module (what we're debugging)
-- `generation.js` — the page *rewriter* (separate feature, not relevant here)
-- `background.bundle.js` — the compiled output in `dist/` (don't edit this directly)
+## Known Issues and Gotchas
+
+### 1. Settings only save on button click
+The popup saves API keys **only** when "Save Keys" is clicked. Typing and switching tabs does NOT save.
+
+### 2. popup.js is NOT bundled
+`popup.js` runs as a raw ES module via `<script type="module">`. It does NOT import from bias.js or generation.js. It only talks to background via `chrome.runtime.sendMessage()`.
+
+### 3. showResultsPanel runs in PAGE context
+The functions `showLoadingPanel`, `showErrorPanel`, `showResultsPanel` are defined in `background.js` but executed in the **web page's context** via `chrome.scripting.executeScript()`. They cannot access any imported modules or service worker scope — they must be self-contained.
+
+### 4. Ollama streaming collects NDJSON
+Ollama returns newline-delimited JSON objects (one per line, each with `message.content`). The stream collector in `queryOllama()` concatenates all `message.content` values. The final concatenated string should be valid JSON (because `format: 'json'` was requested).
+
+### 5. Service worker keepalive
+Both `handle_bias_check` and `process_request("generate")` use a 20-second `setInterval` heartbeat via `chrome.storage.local.get('_ka')` to prevent Chrome from killing the service worker during long inference.
+
+### 6. Article text limits
+- Cloud providers: 12,000 chars
+- Local providers: 20,000 chars
+
+### 7. Dual-pass refinement (Rewrite only)
+All rewrite providers use a two-pass approach: first pass generates, second pass refines with REFINE_PROMPT. Bias check is single-pass.
+
+## Available Ollama Models (on this machine)
+- `phi4:14b-q8_0` ← configured (Q8_0, supported)
+- `gemma3:27b-it-q4_K_M`
+- `qwen3:30b`
+- `phi4-reasoning:14b-q8_0`
+
+## Test Plan
+
+### Manual Test: Bias Check with Ollama
+1. Ensure Ollama is running (`ollama serve` or Ollama app)
+2. Open any news article in Chrome (e.g., Fox News)
+3. Open FoxVox popup → Settings tab → set Ollama model to `phi4:14b-q8_0` → Save Keys
+4. Switch to Bias Check tab → check only "Ollama" → select "Fact Check"
+5. Click "Run Bias Analysis"
+6. Wait 3-10 minutes (phi4 is slow at Q8_0)
+7. Verify: 380px slide-in panel appears on the right of the page
+8. Verify: Summary text, credibility badge, expandable claim cards render
+
+### Automated Test: Direct Ollama API
+```bash
+curl http://localhost:11434/api/tags
+# Should return list of models including phi4:14b-q8_0
+
+curl -X POST http://localhost:11434/api/chat \
+  -H "Content-Type: application/json" \
+  -d '{"model":"phi4:14b-q8_0","messages":[{"role":"user","content":"Say hello in JSON format with a greeting field"}],"format":"json","stream":false}'
+# Should return valid JSON response
+```
+
+### Debugging Tips
+- Check service worker console: `chrome://extensions` → FoxVox Extended → "service worker" link
+- Check page console for injected panel errors
+- Look for `[FoxVox]` prefix in console logs
+- If panel doesn't appear, check if `chrome.scripting.executeScript` threw an error
