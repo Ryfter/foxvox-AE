@@ -209,6 +209,34 @@
             margin: 0;
         }
         .toggle-btn:hover { background: #ddd; }
+        .oauth-row { display: flex; gap: 4px; margin-top: 6px; }
+        .oauth-btn {
+            flex: 1;
+            font-size: 11px;
+            font-weight: bold;
+            padding: 7px 0;
+            border: none;
+            border-radius: 6px;
+            cursor: pointer;
+            color: white;
+            width: auto;
+            margin: 0;
+        }
+        .oauth-btn.xai { background: #1a1a2e; }
+        .oauth-btn.codex { background: #10a37f; }
+        .oauth-btn.logout { background: #888; }
+        .oauth-btn:disabled { background: #bbb; cursor: not-allowed; }
+        .oauth-code {
+            font-family: ui-monospace, Menlo, monospace;
+            font-size: 18px;
+            letter-spacing: 2px;
+            text-align: center;
+            margin: 6px 0 2px;
+            color: #1a1a2e;
+            min-height: 22px;
+        }
+        .oauth-status { font-size: 11px; color: #555; min-height: 14px; margin: 0 0 4px; }
+
         #save-status {
             font-size: 11px;
             color: #090;
@@ -289,12 +317,13 @@
         <div id="radio-container" class="radio-container"></div>
         <h2>Model:</h2>
         <select id="rewrite-provider" style="width:100%;padding:6px 8px;border:1px solid #ccc;border-radius:4px;font-size:13px;color:#333;">
-            <option value="openai">OpenAI GPT-4o</option>
+            <option value="lmstudio" selected>LM Studio (Local)</option>
+            <option value="codex">Codex (ChatGPT login)</option>
+            <option value="grok">xAI Grok (SuperGrok or key)</option>
+            <option value="openai">OpenAI GPT-4o (API key)</option>
             <option value="anthropic">Anthropic Claude</option>
             <option value="gemini">Google Gemini 1.5</option>
-            <option value="grok">xAI Grok 2</option>
             <option value="ollama">Ollama (Local)</option>
-            <option value="lmstudio">LM Studio (Local)</option>
         </select>
         <p id="status"></p>
         <button id="generate-button" class="action-btn">Rewrite the website!</button>
@@ -304,6 +333,16 @@
     <div id="tab-bias" class="tab-content">
         <h2>Models:</h2>
         <div id="model-checkboxes" class="provider-list">
+            <label>
+                <input type="checkbox" value="lmstudio" id="check-lmstudio" checked>
+                <span class="provider-dot" style="background:#6b21a8;"></span>
+                <span>LM Studio <span id="lmstudio-model-hint" class="model-hint"></span></span>
+            </label>
+            <label>
+                <input type="checkbox" value="codex" id="check-codex">
+                <span class="provider-dot" style="background:#10a37f;"></span>
+                Codex (ChatGPT)
+            </label>
             <label>
                 <input type="checkbox" value="openai" id="check-openai">
                 <span class="provider-dot" style="background:#10a37f;"></span>
@@ -322,18 +361,13 @@
             <label>
                 <input type="checkbox" value="grok" id="check-grok">
                 <span class="provider-dot" style="background:#1a1a2e;"></span>
-                xAI Grok 2
+                xAI Grok
             </label>
-            <div class="provider-divider">— Local models —</div>
+            <div class="provider-divider">— Other local —</div>
             <label>
                 <input type="checkbox" value="ollama" id="check-ollama">
                 <span class="provider-dot" style="background:#333333;"></span>
                 <span>Ollama <span id="ollama-model-hint" class="model-hint"></span></span>
-            </label>
-            <label>
-                <input type="checkbox" value="lmstudio" id="check-lmstudio">
-                <span class="provider-dot" style="background:#6b21a8;"></span>
-                <span>LM Studio <span id="lmstudio-model-hint" class="model-hint"></span></span>
             </label>
         </div>
         <div id="model-count-warning"></div>
@@ -356,7 +390,63 @@
 
     <!-- ===== SETTINGS TAB ===== -->
     <div id="tab-settings" class="tab-content">
-        <h2>API Keys</h2>
+        <h2>Local (default)</h2>
+
+        <div class="key-group">
+            <label>
+                <span class="key-dot" style="background:#6b21a8;"></span>
+                LM Studio — URL
+            </label>
+            <div class="key-input-row">
+                <input type="text" id="key-lmstudio-url" placeholder="http://localhost:1234">
+                <button class="test-btn" id="test-lmstudio-btn">Test</button>
+            </div>
+            <span class="test-status" id="lmstudio-test-status"></span>
+        </div>
+        <div class="key-group">
+            <label>
+                <span class="key-dot" style="background:#6b21a8;"></span>
+                LM Studio — Model name <span style="font-weight:normal;color:#aaa;">(optional — auto-detects loaded model)</span>
+            </label>
+            <input type="text" id="key-lmstudio-model" placeholder="local-model">
+        </div>
+        <p class="cors-note">
+            Start the local server in LM Studio (Developer → Start server). Default
+            <code>http://localhost:1234</code>. No API key.
+        </p>
+
+        <h2 style="margin-top:14px;">Sign in</h2>
+        <div class="key-group">
+            <label>
+                <span class="key-dot" style="background:#1a1a2e;"></span>
+                SuperGrok / xAI
+            </label>
+            <div class="oauth-row">
+                <button type="button" class="oauth-btn xai" id="xai-oauth-btn">Sign in with SuperGrok</button>
+                <button type="button" class="oauth-btn logout" id="xai-oauth-logout" hidden>Sign out</button>
+            </div>
+            <div class="oauth-code" id="xai-oauth-code"></div>
+            <p class="oauth-status" id="xai-oauth-status"></p>
+        </div>
+        <div class="key-group">
+            <label>
+                <span class="key-dot" style="background:#10a37f;"></span>
+                Codex / ChatGPT
+            </label>
+            <div class="oauth-row">
+                <button type="button" class="oauth-btn codex" id="codex-oauth-btn">Sign in with Codex</button>
+                <button type="button" class="oauth-btn logout" id="codex-oauth-logout" hidden>Sign out</button>
+            </div>
+            <div class="oauth-code" id="codex-oauth-code"></div>
+            <p class="oauth-status" id="codex-oauth-status"></p>
+        </div>
+        <p class="cors-note">
+            Device-code login: a tab opens, you type the code shown above. Tokens stay in this browser.
+            SuperGrok can sign in and still 403 on <code>api.x.ai</code> — then use a key or LM Studio.
+            Codex uses your ChatGPT plan, not an OpenAI API key.
+        </p>
+
+        <h2 style="margin-top:14px;">API keys (optional)</h2>
 
         <div class="key-group">
             <label>
@@ -402,7 +492,7 @@
             </div>
         </div>
 
-        <h2 style="margin-top:14px;">Local Models</h2>
+        <h2 style="margin-top:14px;">Ollama</h2>
 
         <div class="key-group">
             <label>
@@ -427,30 +517,10 @@
             If Test fails, make sure Ollama is running (<code>ollama serve</code>).
         </p>
 
-        <div class="key-group" style="margin-top:10px;">
-            <label>
-                <span class="key-dot" style="background:#6b21a8;"></span>
-                LM Studio — URL
-            </label>
-            <div class="key-input-row">
-                <input type="text" id="key-lmstudio-url" placeholder="http://localhost:1234">
-                <button class="test-btn" id="test-lmstudio-btn">Test</button>
-            </div>
-            <span class="test-status" id="lmstudio-test-status"></span>
-        </div>
-        <div class="key-group">
-            <label>
-                <span class="key-dot" style="background:#6b21a8;"></span>
-                LM Studio — Model name <span style="font-weight:normal;color:#aaa;">(optional)</span>
-            </label>
-            <input type="text" id="key-lmstudio-model" placeholder="local-model">
-        </div>
-
         <button id="save-keys-btn" class="action-btn">Save Keys</button>
         <p id="save-status"></p>
         <p class="community-key-note">
-            Cloud API keys are stored locally and never shared.
-            Local models connect directly to your machine — no key needed.
+            LM Studio is the default. SuperGrok and Codex tokens, and any API keys, stay in this browser.
         </p>
     </div>
 

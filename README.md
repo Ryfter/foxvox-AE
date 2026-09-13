@@ -1,3 +1,15 @@
+# FoxVox Extended
+
+Public fork of [Palisade Research's FoxVox](https://github.com/PalisadeResearch/foxvox) at [`Ryfter/foxvox-AE`](https://github.com/Ryfter/foxvox-AE). Manifest V3, version **4.0**.
+
+**Current status (2026-09-12, v4.1):** Default model is **LM Studio** (local, no key). Optional **Sign in with SuperGrok** and **Sign in with Codex** (device-code; tokens stay in the browser). Pasted cloud keys still work. Bias check defaults to LM Studio. There is no GitHub issue board yet.
+
+Harness for agents: Grimdex `projects/foxvox-ae/` (rules) · Grimlore `projects/foxvox-ae/` (why/who) · Baton project id `foxvox-ae`.
+
+The original demo copy follows. Prefer the Settings tab over any community key.
+
+---
+
 # FoxVox: One Click to Alter Reality
 
 FoxVox is an open-source Chrome extension powered by GPT-4o. It demonstrates how AI can be used to subtly manipulate the content you consume. It can manipulate how we see political figures, view controversial policies, and even slant entire news websites to reflect different biases.
@@ -15,8 +27,8 @@ FoxVox is an open-source Chrome extension powered by GPT-4o. It demonstrates how
 1. Clone the repository:
 
 ```bash
-git clone https://github.com/PalisadeResearch/foxvox.git
-cd foxvox
+git clone https://github.com/Ryfter/foxvox-AE.git
+cd foxvox-AE
 ```
 
 2. Install dependencies:
@@ -34,12 +46,12 @@ npm run build
 4. Load the extension in Chrome:
     - Open Chrome and navigate to `chrome://extensions/`
     - Enable "Developer mode"
-    - Click "Load unpacked" and select the `foxvox` directory
+    - Click "Load unpacked" and select this repository directory (the folder that contains `manifest.json`)
 
 ## Usage
 
-1. Set your OpenAI API key in the `config.json` file or use the provided key.
-2. Visit your favorite website and see the content manipulation in action.
+1. Open the extension popup → **Settings**. Save your own cloud API keys, or point Ollama / LM Studio at a local model and use **Test connection**.
+2. Visit a news page. **Rewrite** applies an agenda template. **Bias Check** injects a side-by-side analysis panel on the page.
 
 ## Technical Summary
 
@@ -101,5 +113,6 @@ FoxVox is built using JavaScript, HTML, and CSS. It leverages the GPT-4o model t
 ## Potential Improvements to this Project
 
 - [ ] Make a **stateless popup** and assert UI from background. This will fix persistancy of the UI and leverage issues from the popup data being lost on closing it.
-- [ ] Improve generation through **better prompting**, advanced **generation techniques** like CoT, RAG, ToT etc and better **context utilisation** -- including clustering of the text chunks that utilises semantic similarity and spatial locality.
-- [ ] Improve UX through a **dedicated server** and **google account authorisation** / **phone number authorisation** to remove community key shenanigans.
+- [x] **BYO keys + local models** so the demo runs without a shared community key (foxvox-ae-d001). Dedicated server / Google-or-phone auth is not the current path.
+- [ ] Improve generation through **better prompting**, advanced **generation techniques** like CoT, RAG, ToT etc and better **context utilisation** -- including clustering of the text chunks that utilises semantic similarity and spatial locality. (Rewrite already does a two-pass refine; bias check is single-pass.)
+- [x] **Multi-provider rewrite and bias check** (OpenAI, Anthropic, Gemini, Grok, Ollama, LM Studio) — foxvox-ae-d002, foxvox-ae-d003.

@@ -1,4 +1,6 @@
 // generation.js - Multi-provider page rewrite
+import { queryCodex } from './codex-api.js';
+import { XAI_FORBIDDEN_MESSAGE, isHttpForbidden } from './oauth-lib.js';
 
 function extractHTML(text) {
     const fenced = text.match(/```(?:html)?\s*([\s\S]*?)```/i);
@@ -217,14 +219,45 @@ async function rewriteOllama(baseUrl, model, template, original) {
     return extractHTML(refined);
 }
 
+function looksForbidden(err) {
+    const msg = err?.message || String(err);
+    const code = Number((msg.match(/HTTP (\d+)/) || [])[1]);
+    return isHttpForbidden(code) || /\b403\b/.test(msg);
+}
+
+async function rewriteGrokOAuth(token, template, original) {
+    try {
+        return await rewriteWithToolUse(token, 'https://api.x.ai/v1', 'grok-4.5', template, original);
+    } catch (err) {
+        if (looksForbidden(err)) throw new Error(XAI_FORBIDDEN_MESSAGE);
+        throw err;
+    }
+}
+
+async function rewriteCodex(session, template, original) {
+    const system = template.generation + '\n\nOutput only the rewritten HTML — no markdown fences, no explanation, just raw HTML.';
+    const first = await queryCodex(session, system, original);
+    const refined = await queryCodex(
+        session,
+        system,
+        `${original}\n\n---\nFirst draft:\n${first}\n\n${REFINE_PROMPT}`
+    );
+    return extractHTML(refined);
+}
+
 // ── Main export ───────────────────────────────────────────────────────────
-// provider: 'openai' | 'anthropic' | 'gemini' | 'grok' | 'ollama' | 'lmstudio'
-// apiKeys:  { openai, anthropic, gemini, grok, ollama_url, ollama_model, lmstudio_url, lmstudio_model }
+// provider: 'openai' | 'codex' | 'anthropic' | 'gemini' | 'grok' | 'ollama' | 'lmstudio'
 export async function CoT(provider, apiKeys, template, original) {
     switch (provider) {
         case 'openai':
             if (!apiKeys.openai) throw new Error('No OpenAI key configured. Add one in Settings.');
             return rewriteWithToolUse(apiKeys.openai, 'https://api.openai.com/v1', 'gpt-4o', template, original);
+
+        case 'codex':
+            if (!apiKeys.codexOAuth?.accessToken) {
+                throw new Error('Sign in with Codex in Settings, or pick another model.');
+            }
+            return rewriteCodex(apiKeys.codexOAuth, template, original);
 
         case 'anthropic':
             if (!apiKeys.anthropic) throw new Error('No Anthropic key configured. Add one in Settings.');
@@ -235,15 +268,26 @@ export async function CoT(provider, apiKeys, template, original) {
             return rewriteGemini(apiKeys.gemini, 'gemini-1.5-flash', template, original);
 
         case 'grok':
-            if (!apiKeys.grok) throw new Error('No Grok key configured. Add one in Settings.');
+            if (apiKeys.xaiOAuth?.accessToken) {
+                return rewriteGrokOAuth(apiKeys.xaiOAuth.accessToken, template, original);
+            }
+            if (!apiKeys.grok) throw new Error('Sign in with SuperGrok in Settings, or add an xAI API key.');
             return rewriteWithToolUse(apiKeys.grok, 'https://api.x.ai/v1', 'grok-2-latest', template, original);
 
         case 'ollama':
             return rewriteOllama(apiKeys.ollama_url, apiKeys.ollama_model, template, original);
 
         case 'lmstudio': {
-            const base = (apiKeys.lmstudio_url || 'http://localhost:1234').replace(/\/$/, '') + '/v1';
-            return rewriteWithOpenAIText(null, base, apiKeys.lmstudio_model || 'local-model', template, original);
+            const root = (apiKeys.lmstudio_url || 'http://localhost:1234').replace(/\/$/, '');
+            let model = apiKeys.lmstudio_model;
+            if (!model || model === 'local-model') {
+                const listed = await fetch(`${root}/v1/models`).catch(() => null);
+                if (!listed || !listed.ok) throw new Error('LM Studio not reachable. Is the local server running?');
+                const ids = ((await listed.json()).data || []).map(m => m.id);
+                if (!ids.length) throw new Error('No model loaded in LM Studio.');
+                model = ids[0];
+            }
+            return rewriteWithOpenAIText(null, `${root}/v1`, model, template, original);
         }
 
         default:

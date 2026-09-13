@@ -1,4 +1,6 @@
 // bias.js - Multi-LLM bias/fact-check analysis module
+import { queryCodex } from './codex-api.js';
+import { XAI_FORBIDDEN_MESSAGE, isHttpForbidden } from './oauth-lib.js';
 
 // ── JSON output schema ────────────────────────────────────────────────────
 const CLAIM_SCHEMA = `{
@@ -133,19 +135,27 @@ async function queryGemini(apiKey, prompt, text) {
     return (await response.json()).candidates[0].content.parts[0].text;
 }
 
-async function queryGrok(apiKey, prompt, text) {
+async function queryGrok(apiKey, prompt, text, { oauth = false, model = 'grok-2-latest' } = {}) {
     const response = await fetch('https://api.x.ai/v1/chat/completions', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${apiKey}` },
         body: JSON.stringify({
-            model: 'grok-2-latest',
+            model,
             messages: [{ role: 'system', content: prompt }, { role: 'user', content: text }],
             max_tokens: 2000,
             response_format: { type: 'json_object' }
         })
     });
-    if (!response.ok) { const e = await response.json().catch(() => ({})); throw new Error(e.error?.message || `HTTP ${response.status}`); }
+    if (!response.ok) {
+        if (oauth && isHttpForbidden(response.status)) throw new Error(XAI_FORBIDDEN_MESSAGE);
+        const e = await response.json().catch(() => ({}));
+        throw new Error(e.error?.message || `HTTP ${response.status}`);
+    }
     return (await response.json()).choices[0].message.content;
+}
+
+async function queryCodexBias(session, prompt, text) {
+    return queryCodex(session, prompt, text);
 }
 
 async function queryOllama(baseUrl, model, prompt, text) {
@@ -194,7 +204,16 @@ async function queryOllama(baseUrl, model, prompt, text) {
 }
 
 async function queryLMStudio(baseUrl, model, prompt, text) {
-    const url = (baseUrl || 'http://localhost:1234').replace(/\/$/, '') + '/v1/chat/completions';
+    const root = (baseUrl || 'http://localhost:1234').replace(/\/$/, '');
+    if (!model || model === 'local-model') {
+        const listed = await fetch(`${root}/v1/models`).catch(() => null);
+        if (!listed || !listed.ok) throw new Error('LM Studio not reachable. Is the local server running?');
+        const ids = ((await listed.json()).data || []).map(m => m.id);
+        if (!ids.length) throw new Error('No model loaded in LM Studio.');
+        model = ids[0];
+        console.log('[FoxVox] LM Studio auto-selected model:', model);
+    }
+    const url = root + '/v1/chat/completions';
     const response = await fetch(url, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -234,11 +253,12 @@ async function queryLMStudio(baseUrl, model, prompt, text) {
 
 // ── Providers registry ────────────────────────────────────────────────────
 export const PROVIDERS = {
-    openai:    { name: 'OpenAI GPT-4o',     query: queryOpenAI,    color: '#10a37f', local: false, defaultUrl: null },
+    openai:    { name: 'OpenAI GPT-4o',      query: queryOpenAI,    color: '#10a37f', local: false, defaultUrl: null },
+    codex:     { name: 'Codex (ChatGPT)',    query: null,           color: '#10a37f', local: false, defaultUrl: null },
     anthropic: { name: 'Anthropic Claude',   query: queryAnthropic, color: '#d97706', local: false, defaultUrl: null },
     gemini:    { name: 'Google Gemini 1.5',  query: queryGemini,    color: '#4285f4', local: false, defaultUrl: null },
-    grok:      { name: 'xAI Grok 2',         query: queryGrok,      color: '#1a1a2e', local: false, defaultUrl: null },
-    ollama:    { name: 'Ollama (Local)',      query: null,           color: '#333333', local: true,  defaultUrl: 'http://localhost:11434' },
+    grok:      { name: 'xAI Grok',           query: queryGrok,      color: '#1a1a2e', local: false, defaultUrl: null },
+    ollama:    { name: 'Ollama (Local)',     query: null,           color: '#333333', local: true,  defaultUrl: 'http://localhost:11434' },
     lmstudio:  { name: 'LM Studio (Local)',  query: null,           color: '#6b21a8', local: true,  defaultUrl: 'http://localhost:1234' }
 };
 
@@ -262,6 +282,11 @@ export async function runBiasAnalysis(selectedProviders, apiKeys, analysisType, 
                 analysis = await queryOllama(apiKeys.ollama_url || provider.defaultUrl, apiKeys.ollama_model || null, prompt, articleText);
             } else if (providerId === 'lmstudio') {
                 analysis = await queryLMStudio(apiKeys.lmstudio_url || provider.defaultUrl, apiKeys.lmstudio_model || 'local-model', prompt, articleText);
+            } else if (providerId === 'codex') {
+                if (!apiKeys.codexOAuth?.accessToken) throw new Error('Sign in with Codex in Settings.');
+                analysis = await queryCodexBias(apiKeys.codexOAuth, prompt, articleText);
+            } else if (providerId === 'grok' && apiKeys.xaiOAuth?.accessToken) {
+                analysis = await queryGrok(apiKeys.xaiOAuth.accessToken, prompt, articleText, { oauth: true, model: 'grok-4.5' });
             } else {
                 const key = apiKeys[providerId];
                 if (!key) throw new Error('No API key configured. Add one in Settings.');

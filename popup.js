@@ -79,6 +79,13 @@ async function testLocalConnection(type, baseUrl) {
 
         if (modelList.length > 0) {
             statusEl.textContent = `✓ Connected. Available: ${modelList.join(', ')}`;
+            const modelInput = document.getElementById(`key-${type}-model`);
+            if (modelInput && !modelInput.value.trim()) {
+                modelInput.value = modelList[0];
+                const stored = { [`key_${type}-model`]: modelList[0] };
+                chrome.storage.local.set(stored);
+                updateModelHints(stored);
+            }
         } else {
             statusEl.textContent = type === 'ollama'
                 ? '✓ Connected — no models pulled yet (run: ollama pull <model>)'
@@ -104,6 +111,8 @@ function initSettings() {
         });
         // Populate model hints in the Bias tab
         updateModelHints(result);
+        const lmUrl = document.getElementById('key-lmstudio-url').value.trim() || 'http://localhost:1234';
+        testLocalConnection('lmstudio', lmUrl);
     });
 
     // Show/hide toggles
@@ -123,6 +132,8 @@ function initSettings() {
         const url = document.getElementById('key-lmstudio-url').value.trim() || 'http://localhost:1234';
         testLocalConnection('lmstudio', url);
     });
+
+    initOAuthControls();
 
     // Save button
     document.getElementById('save-keys-btn').addEventListener('click', () => {
@@ -146,7 +157,6 @@ function initSettings() {
 
             updateModelHints(obj);
 
-            // Notify background of the OpenAI key update
             if (obj.key_openai) {
                 chrome.runtime.sendMessage({
                     action: 'push_openai_to_background',
@@ -155,6 +165,76 @@ function initSettings() {
                 });
             }
         });
+    });
+}
+
+function oauthEls(provider) {
+    return {
+        start: document.getElementById(`${provider}-oauth-btn`),
+        logout: document.getElementById(`${provider}-oauth-logout`),
+        status: document.getElementById(`${provider}-oauth-status`),
+        code: document.getElementById(`${provider}-oauth-code`),
+    };
+}
+
+function applyOAuthStatus(provider, session) {
+    const { start, logout, status, code } = oauthEls(provider);
+    if (!start) return;
+    if (session?.signedIn) {
+        start.hidden = true;
+        logout.hidden = false;
+        if (code) code.textContent = '';
+        if (status) status.textContent = session.email ? `Signed in as ${session.email}` : 'Signed in';
+    } else {
+        start.hidden = false;
+        logout.hidden = true;
+    }
+}
+
+function bindOAuth(provider) {
+    const els = oauthEls(provider);
+    els.start.addEventListener('click', () => {
+        els.start.disabled = true;
+        els.status.textContent = 'Starting…';
+        chrome.runtime.sendMessage({ action: 'start_oauth', provider }, (res) => {
+            els.start.disabled = false;
+            if (chrome.runtime.lastError || !res?.ok) {
+                els.status.textContent = res?.error || chrome.runtime.lastError?.message || 'Could not start login';
+                return;
+            }
+            els.code.textContent = res.userCode;
+            els.status.textContent = 'Enter this code in the tab that opened, then wait here.';
+        });
+    });
+    els.logout.addEventListener('click', () => {
+        chrome.runtime.sendMessage({ action: 'logout_oauth', provider }, () => {
+            applyOAuthStatus(provider, null);
+            els.status.textContent = 'Signed out.';
+            els.code.textContent = '';
+        });
+    });
+}
+
+function initOAuthControls() {
+    bindOAuth('xai');
+    bindOAuth('codex');
+    chrome.runtime.sendMessage({ action: 'oauth_status' }, (res) => {
+        if (!res?.ok) return;
+        applyOAuthStatus('xai', res.status.xai);
+        applyOAuthStatus('codex', res.status.codex);
+    });
+    chrome.runtime.onMessage.addListener((message) => {
+        if (message.action === 'oauth_completed') {
+            applyOAuthStatus(message.provider, { signedIn: true, email: message.email });
+            const { status, code } = oauthEls(message.provider);
+            if (code) code.textContent = '';
+            if (status) status.textContent = message.email ? `Signed in as ${message.email}` : 'Signed in';
+        }
+        if (message.action === 'oauth_error') {
+            const { status, start } = oauthEls(message.provider);
+            if (start) start.hidden = false;
+            if (status) status.textContent = message.message || 'Login failed';
+        }
     });
 }
 
@@ -173,8 +253,8 @@ function initBiasCheck(tab) {
         if (selected.length < 1) {
             warning.textContent = 'Select at least 1 model.';
             biasBtn.disabled = true;
-        } else if (selected.length > 6) {
-            warning.textContent = 'Select at most 6 models.';
+        } else if (selected.length > 7) {
+            warning.textContent = 'Select at most 7 models.';
             biasBtn.disabled = true;
         } else {
             warning.textContent = '';
@@ -339,7 +419,7 @@ export function setup(tab, url) {
                 // Restore saved provider selection
                 const savedProvider = localStorage.getItem('rewrite_provider');
                 const providerSel = document.getElementById('rewrite-provider');
-                if (savedProvider && providerSel) providerSel.value = savedProvider;
+                if (providerSel) providerSel.value = savedProvider || 'lmstudio';
                 providerSel.addEventListener('change', (e) => {
                     localStorage.setItem('rewrite_provider', e.target.value);
                 });

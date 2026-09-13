@@ -1,6 +1,7 @@
 import {clear_object_stores, fetch_from_object_store, open_indexDB, push_to_object_store} from "./database.js";
 import {CoT} from "./generation.js";
 import {runBiasAnalysis} from "./bias.js";
+import {startOAuth, cancelOAuth, logoutOAuth, oauthStatus, freshSession} from "./oauth-runtime.js";
 
 function collect_content() {
     const TEXT_BOUNDARY_MIN = 20;
@@ -341,9 +342,11 @@ async function process_request(request) {
                         ollama_url:    result['key_ollama-url'],
                         ollama_model:  result['key_ollama-model'],
                         lmstudio_url:  result['key_lmstudio-url'],
-                        lmstudio_model: result['key_lmstudio-model']
+                        lmstudio_model: result['key_lmstudio-model'],
+                        xaiOAuth:      await freshSession('xai'),
+                        codexOAuth:    await freshSession('codex'),
                     };
-                    const provider = request.rewriteProvider || 'openai';
+                    const provider = request.rewriteProvider || 'lmstudio';
 
                     try {
                         let nodes = [];
@@ -702,7 +705,9 @@ async function handle_bias_check(request) {
         ollama_url:     stored['key_ollama-url'],
         ollama_model:   stored['key_ollama-model'],
         lmstudio_url:   stored['key_lmstudio-url'],
-        lmstudio_model: stored['key_lmstudio-model']
+        lmstudio_model: stored['key_lmstudio-model'],
+        xaiOAuth:       await freshSession('xai'),
+        codexOAuth:     await freshSession('codex'),
     };
     console.log('[FoxVox] Providers:', request.selectedProviders,
         '| lmstudio:', apiKeys.lmstudio_url, apiKeys.lmstudio_model);
@@ -740,11 +745,34 @@ async function handle_bias_check(request) {
     }
 }
 
-chrome.runtime.onMessage.addListener(async function (request, sender, sendResponse) {
-    if (request.action === 'run_bias_check') {
-        await handle_bias_check(request);
+chrome.runtime.onMessage.addListener(function (request, sender, sendResponse) {
+    if (request.action === 'start_oauth') {
+        startOAuth(request.provider)
+            .then(device => sendResponse({ ok: true, ...device }))
+            .catch(err => sendResponse({ ok: false, error: err.message || String(err) }));
         return true;
     }
-    await process_request(request, sender, sendResponse);
+    if (request.action === 'cancel_oauth') {
+        cancelOAuth(request.provider);
+        sendResponse({ ok: true });
+        return true;
+    }
+    if (request.action === 'logout_oauth') {
+        logoutOAuth(request.provider)
+            .then(() => sendResponse({ ok: true }))
+            .catch(err => sendResponse({ ok: false, error: err.message || String(err) }));
+        return true;
+    }
+    if (request.action === 'oauth_status') {
+        oauthStatus()
+            .then(status => sendResponse({ ok: true, status }))
+            .catch(err => sendResponse({ ok: false, error: err.message || String(err) }));
+        return true;
+    }
+    if (request.action === 'run_bias_check') {
+        handle_bias_check(request);
+        return true;
+    }
+    process_request(request, sender, sendResponse);
     return true;
 });

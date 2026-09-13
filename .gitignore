@@ -1,3 +1,6 @@
 node_modules
 dist
 .env
+
+# Local agent/session settings — not project source
+.claude/

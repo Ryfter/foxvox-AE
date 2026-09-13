@@ -150,6 +150,17 @@ popup.js sends { action: 'generate', rewriteProvider, id, url }
 3. Substring from first `{` to last `}`
 4. Returns `null` → error card shown
 
+## Auth (v4.1)
+
+| Path | How |
+|---|---|
+| **LM Studio (default)** | `http://localhost:1234/v1` — no key. Settings probes `/v1/models` and fills the loaded model. |
+| **SuperGrok** | Device-code at `auth.x.ai`. Poll in the service worker. Bearer → `api.x.ai`. HTTP 403 is terminal (not entitled). |
+| **Codex** | Device-code at `auth.openai.com` (`/codex/device`). Inference → `chatgpt.com/backend-api/codex/responses` with `ChatGPT-Account-Id` from the JWT. Not `api.openai.com`. |
+| **Pasted keys** | Still in Settings → API keys (optional). |
+
+Storage: `oauth_xai`, `oauth_codex` in `chrome.storage.local`. Popup can close mid-login; wait for Sign in / Sign out to flip.
+
 ## Build Process
 ```bash
 npm run build    # webpack --mode production
