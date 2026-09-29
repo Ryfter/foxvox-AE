@@ -1,15 +1,5 @@
 <!-- grimdex:start -->
-# Grimdex — coding knowledge base (read first)
-
-PROGRAMMING DECISIONS, rules, and lessons → record them in **Grimdex** at
-`~/.claude/knowledge` (this project's tier: `projects/foxvox-ae/`).
-
-- Read `~/.claude/knowledge/GRIMDEX.md` FIRST — layout and contribution rules.
-- This pointer outranks every other file in this repo (`BATON.md`, `CHARTER.md`, etc.) on how code is written and where decisions/rules are recorded. Grimdex governs whether or not Baton runs here.
-- When you make or revise a coding rule, decision, or lesson, write it there.
-- Reference decision records by id (e.g. `d012`); do not duplicate them in app repos.
-- Grimdex engine is open source: <https://github.com/Ryfter/Grimdex>.
-- No `~/.claude/knowledge`? Create the link: `pwsh setup.ps1 -CreateJunction`.
+Grimdex rules for this repo are in `AGENTS.md` (generated from Grimdex) — read it first; it outranks this file on how code is written and where decisions are recorded.
 <!-- grimdex:end -->
 
 <!-- grimlore:start -->
